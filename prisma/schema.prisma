@@ -18,6 +18,7 @@ model User {
   lastLoginAt  DateTime?
 
   conversations Conversation[]
+  folders      Folder[]
   refreshTokens RefreshToken[]
   settings     UserSettings?
 }
@@ -34,9 +35,23 @@ model UserSettings {
   user User @relation(fields: [userId], references: [id])
 }
 
+model Folder {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user          User           @relation(fields: [userId], references: [id])
+  conversations Conversation[]
+
+  @@index([userId])
+}
+
 model Conversation {
   id         String    @id @default(cuid())
   userId     String
+  folderId   String?
   title      String
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -44,9 +59,11 @@ model Conversation {
   deletedAt  DateTime?
 
   user     User      @relation(fields: [userId], references: [id])
+  folder   Folder?   @relation(fields: [folderId], references: [id])
   messages Message[]
 
   @@index([userId])
+  @@index([folderId])
 }
 
 model Message {

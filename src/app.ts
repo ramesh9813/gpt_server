@@ -11,6 +11,7 @@ import { csrfProtect } from "./middleware/csrf";
 import authRoutes from "./modules/auth/auth.routes";
 import userRoutes from "./modules/users/users.routes";
 import conversationRoutes from "./modules/conversations/conversations.routes";
+import folderRoutes from "./modules/folders/folders.routes";
 import messageRoutes from "./modules/messages/messages.routes";
 import chatRoutes from "./modules/chat/chat.routes";
 import modelRoutes from "./modules/models/models.routes";
@@ -60,6 +61,7 @@ app.get("/api/health", (_req, res) => {
 
 app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/me", userRoutes);
+app.use("/api/folders", folderRoutes);
 app.use("/api/conversations", conversationRoutes);
 app.use("/api/conversations", messageRoutes);
 app.use("/api/chat", chatLimiter, chatRoutes);
