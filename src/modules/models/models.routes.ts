@@ -7,14 +7,14 @@ let cachedModels: unknown[] = [];
 let cachedAt = 0;
 
 const getModelsFromOpenRouter = async (useAuth: boolean) => {
-  const headers: Record<string, string> = {
-    "HTTP-Referer": env.APP_ORIGIN,
-    "X-Title": "ChatUI"
-  };
-  if (useAuth && env.OPENROUTER_API_KEY) {
-    headers.Authorization = `Bearer ${env.OPENROUTER_API_KEY}`;
-  }
-
+          const headers: Record<string, string> = {
+            "HTTP-Referer": env.APP_ORIGIN,
+            "X-Title": "ChatUI"
+          };
+      
+          if (useAuth && env.OROUTER_API_KEY) {
+            headers.Authorization = `Bearer ${env.OROUTER_API_KEY}`;
+          }
   return fetch(`${env.OPENROUTER_BASE_URL}/models`, { headers });
 };
 

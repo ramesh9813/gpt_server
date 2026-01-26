@@ -146,7 +146,7 @@ router.post(
       const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+          Authorization: `Bearer ${env.OROUTER_API_KEY}`,
           "Content-Type": "application/json",
           "HTTP-Referer": env.APP_ORIGIN,
           "X-Title": "ChatUI"

@@ -7,7 +7,7 @@ const envSchema = z.object({
   DATABASE_URL: z.string().default("file:./dev.db"),
   JWT_ACCESS_SECRET: z.string(),
   JWT_REFRESH_SECRET: z.string(),
-  OPENROUTER_API_KEY: isTest
+  OROUTER_API_KEY: isTest
     ? z.string().optional().default("test")
     : z.string(),
   OPENROUTER_BASE_URL: z.string().default("https://openrouter.ai/api/v1"),

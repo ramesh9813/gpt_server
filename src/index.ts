@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./init-env";
 import app from "./app";
 import { env } from "./lib/config";
 import { logger } from "./lib/logger";
