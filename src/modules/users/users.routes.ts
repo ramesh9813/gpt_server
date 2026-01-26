@@ -58,15 +58,26 @@ router.patch(
 );
 
 router.get("/usage", requireAuth, async (req, res) => {
-  // Simple "today" logic based on server time
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
+  const range = (req.query.range as string) || "day";
+  const now = new Date();
+  let start: Date | null = new Date(now);
+
+  if (range === "week") {
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 6);
+  } else if (range === "year") {
+    start = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+  } else if (range === "all") {
+    start = null;
+  } else {
+    start.setHours(0, 0, 0, 0);
+  }
 
   const logs = await prisma.message.findMany({
     where: {
       conversation: { userId: req.user!.id },
       role: "ASSISTANT",
-      createdAt: { gte: start },
+      ...(start ? { createdAt: { gte: start } } : {}),
       tokenCount: { not: null }
     },
     select: {

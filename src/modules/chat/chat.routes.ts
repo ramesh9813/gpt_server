@@ -251,6 +251,21 @@ router.post(
       sendEvent("done", { messageId: assistantMsg.id, usage: usage || {} });
       return res.end();
     } catch (err: any) {
+      if (controller.signal.aborted) {
+        await prisma.message.update({
+          where: { id: assistantMsg.id },
+          data: {
+            content: assistantContent,
+            status: "COMPLETE",
+            model: model || env.OPENROUTER_MODEL_DEFAULT
+          }
+        });
+        await prisma.conversation.update({
+          where: { id: conversationId },
+          data: { updatedAt: new Date() }
+        });
+        return res.end();
+      }
       console.error("Stream error:", err);
       await prisma.message.update({
         where: { id: assistantMsg.id },
