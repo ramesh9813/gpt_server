@@ -57,4 +57,30 @@ router.patch(
   }
 );
 
+router.get("/usage", requireAuth, async (req, res) => {
+  // Simple "today" logic based on server time
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+
+  const logs = await prisma.message.findMany({
+    where: {
+      conversation: { userId: req.user!.id },
+      role: "ASSISTANT",
+      createdAt: { gte: start },
+      tokenCount: { not: null }
+    },
+    select: {
+      id: true,
+      createdAt: true,
+      model: true,
+      promptTokens: true,
+      completionTokens: true,
+      tokenCount: true
+    },
+    orderBy: { createdAt: "desc" }
+  });
+
+  return res.json({ success: true, data: { items: logs } });
+});
+
 export default router;

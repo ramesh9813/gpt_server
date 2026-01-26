@@ -142,6 +142,8 @@ router.post(
     let lastPersistedLength = 0;
     let lastPersistedAt = Date.now();
 
+    console.log("Sending messages to OpenRouter:", JSON.stringify(messages, null, 2));
+
     try {
       const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
         method: "POST",
@@ -159,15 +161,18 @@ router.post(
         signal: controller.signal
       });
 
+      console.log("OpenRouter Response Status:", response.status, response.statusText);
+
       if (!response.ok || !response.body) {
         const errorText = await response.text();
+        console.error("OpenRouter Error:", errorText);
         await prisma.message.update({
           where: { id: assistantMsg.id },
           data: { status: "ERROR", error: errorText }
         });
         sendEvent("error", {
           code: "OPENROUTER_ERROR",
-          message: "OpenRouter request failed"
+          message: `OpenRouter error: ${errorText}`
         });
         return res.end();
       }
@@ -231,7 +236,10 @@ router.post(
         data: {
           content: assistantContent,
           status: "COMPLETE",
-          model: model || env.OPENROUTER_MODEL_DEFAULT
+          model: model || env.OPENROUTER_MODEL_DEFAULT,
+          promptTokens: usage?.prompt_tokens,
+          completionTokens: usage?.completion_tokens,
+          tokenCount: usage?.total_tokens
         }
       });
 
@@ -243,6 +251,7 @@ router.post(
       sendEvent("done", { messageId: assistantMsg.id, usage: usage || {} });
       return res.end();
     } catch (err: any) {
+      console.error("Stream error:", err);
       await prisma.message.update({
         where: { id: assistantMsg.id },
         data: { status: "ERROR", error: err?.message || "Stream error" }

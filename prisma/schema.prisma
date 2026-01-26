@@ -73,6 +73,8 @@ model Message {
   content        String
   createdAt      DateTime      @default(now())
   tokenCount     Int?
+  promptTokens   Int?
+  completionTokens Int?
   model          String?
   status         String        @default("COMPLETE")
   error          String?
