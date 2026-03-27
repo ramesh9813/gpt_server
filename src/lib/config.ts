@@ -12,7 +12,9 @@ const envSchema = z.object({
     : z.string(),
   OPENROUTER_BASE_URL: z.string().default("https://openrouter.ai/api/v1"),
   OPENROUTER_MODEL_DEFAULT: z.string().default("openai/gpt-4o-mini"),
-  APP_ORIGIN: z.string().default("http://localhost:5173")
+  APP_ORIGIN: z.string().default("http://localhost:5173"),
+  RUNNER_BASE_URL: z.string().default("https://emkc.org/api/v2/piston"),
+  RUNNER_TIMEOUT_MS: z.string().optional()
 });
 
 export const env = envSchema.parse(process.env);

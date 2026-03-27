@@ -15,6 +15,7 @@ import folderRoutes from "./modules/folders/folders.routes";
 import messageRoutes from "./modules/messages/messages.routes";
 import chatRoutes from "./modules/chat/chat.routes";
 import modelRoutes from "./modules/models/models.routes";
+import runnerRoutes from "./modules/runner/runner.routes";
 
 const app = express();
 
@@ -54,6 +55,10 @@ const chatLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 30
 });
+const runnerLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10
+});
 
 app.get("/api/health", (_req, res) => {
   res.json({ success: true, data: { status: "ok" } });
@@ -66,6 +71,7 @@ app.use("/api/conversations", conversationRoutes);
 app.use("/api/conversations", messageRoutes);
 app.use("/api/chat", chatLimiter, chatRoutes);
 app.use("/api/models", modelRoutes);
+app.use("/api/runner", runnerLimiter, runnerRoutes);
 
 app.use(errorHandler);
 
