@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import { verifyAccessToken } from "../lib/auth";
+import { normalizeUserRole } from "../lib/userRoles";
 
 export const requireAuth = (
   req: Request,
@@ -16,7 +17,7 @@ export const requireAuth = (
 
   try {
     const payload = verifyAccessToken(token);
-    req.user = { id: payload.sub, role: payload.role };
+    req.user = { id: payload.sub, role: normalizeUserRole(payload.role) };
     return next();
   } catch {
     return res.status(401).json({

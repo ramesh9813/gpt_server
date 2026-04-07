@@ -20,7 +20,11 @@ import runnerRoutes from "./modules/runner/runner.routes";
 const app = express();
 
 app.use(pinoHttp({ logger: logger as any }));
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" }
+  })
+);
 const allowedOrigins = env.APP_ORIGIN.split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);

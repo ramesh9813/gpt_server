@@ -11,6 +11,7 @@ import {
   hashToken,
   verifyRefreshToken
 } from "../../lib/auth";
+import { normalizeUserRole } from "../../lib/userRoles";
 import { validateBody } from "../../middleware/validate";
 
 const router = Router();
@@ -84,15 +85,15 @@ router.post("/signup", validateBody(signupSchema), async (req, res, next) => {
         email,
         passwordHash,
         name,
-        role: "user",
         settings: {
           create: {}
         }
       }
     });
+    const normalizedRole = normalizeUserRole(user.role);
 
-    const accessToken = signAccessToken({ sub: user.id, role: user.role });
-    const refreshToken = signRefreshToken({ sub: user.id, role: user.role });
+    const accessToken = signAccessToken({ sub: user.id, role: normalizedRole });
+    const refreshToken = signRefreshToken({ sub: user.id, role: normalizedRole });
     const csrfToken = createCsrfToken();
     await prisma.refreshToken.create({
       data: {
@@ -111,7 +112,7 @@ router.post("/signup", validateBody(signupSchema), async (req, res, next) => {
           id: user.id,
           email: user.email,
           name: user.name,
-          role: user.role
+          role: normalizedRole
         }
       },
       message: "Signup successful"
@@ -139,9 +140,10 @@ router.post("/login", validateBody(loginSchema), async (req, res, next) => {
         error: { code: "INVALID_CREDENTIALS", message: "Invalid credentials" }
       });
     }
+    const normalizedRole = normalizeUserRole(user.role);
 
-    const accessToken = signAccessToken({ sub: user.id, role: user.role });
-    const refreshToken = signRefreshToken({ sub: user.id, role: user.role });
+    const accessToken = signAccessToken({ sub: user.id, role: normalizedRole });
+    const refreshToken = signRefreshToken({ sub: user.id, role: normalizedRole });
     const csrfToken = createCsrfToken();
 
     await prisma.refreshToken.create({
@@ -166,7 +168,7 @@ router.post("/login", validateBody(loginSchema), async (req, res, next) => {
           id: user.id,
           email: user.email,
           name: user.name,
-          role: user.role
+          role: normalizedRole
         }
       },
       message: "Login successful"
@@ -221,12 +223,12 @@ router.post("/google", async (req, res, next) => {
         email,
         passwordHash,
         name: decoded.name || null,
-        role: "user",
         settings: {
           create: {}
         }
       }
     });
+    const normalizedRole = normalizeUserRole(user.role);
 
     await prisma.userSettings.upsert({
       where: { userId: user.id },
@@ -234,8 +236,8 @@ router.post("/google", async (req, res, next) => {
       create: { userId: user.id }
     });
 
-    const accessToken = signAccessToken({ sub: user.id, role: user.role });
-    const refreshToken = signRefreshToken({ sub: user.id, role: user.role });
+    const accessToken = signAccessToken({ sub: user.id, role: normalizedRole });
+    const refreshToken = signRefreshToken({ sub: user.id, role: normalizedRole });
     const csrfToken = createCsrfToken();
 
     await prisma.refreshToken.create({
@@ -255,7 +257,7 @@ router.post("/google", async (req, res, next) => {
           id: user.id,
           email: user.email,
           name: user.name,
-          role: user.role
+          role: normalizedRole
         }
       },
       message: "Google login successful"
@@ -292,6 +294,7 @@ router.post("/refresh", async (req, res) => {
 
   try {
     const payload = verifyRefreshToken(refreshToken);
+    const normalizedRole = normalizeUserRole(payload.role);
     const stored = await prisma.refreshToken.findFirst({
       where: {
         tokenHash: hashToken(refreshToken),
@@ -312,10 +315,10 @@ router.post("/refresh", async (req, res) => {
       data: { revokedAt: new Date() }
     });
 
-    const accessToken = signAccessToken({ sub: payload.sub, role: payload.role });
+    const accessToken = signAccessToken({ sub: payload.sub, role: normalizedRole });
     const newRefreshToken = signRefreshToken({
       sub: payload.sub,
-      role: payload.role
+      role: normalizedRole
     });
     const csrfToken = req.cookies?.csrfToken || createCsrfToken();
 

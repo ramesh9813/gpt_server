@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma";
+import { normalizeUserRole } from "../../lib/userRoles";
 import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 
@@ -28,7 +29,17 @@ router.get("/", requireAuth, async (req, res) => {
     }
   });
 
-  return res.json({ success: true, data: { user } });
+  return res.json({
+    success: true,
+    data: {
+      user: user
+        ? {
+            ...user,
+            role: normalizeUserRole(user.role)
+          }
+        : null
+    }
+  });
 });
 
 router.get("/settings", requireAuth, async (req, res) => {
