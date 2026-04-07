@@ -1,4 +1,4 @@
-import { Response, Router } from "express";
+import { CookieOptions, Request, Response, Router } from "express";
 import { z } from "zod";
 import crypto from "crypto";
 import { prisma } from "../../lib/prisma";
@@ -41,32 +41,75 @@ const getBearerToken = (authorization?: string) => {
 
 const createCsrfToken = () => crypto.randomBytes(24).toString("hex");
 
+const shouldUseSecureCookies = (req: Request) => {
+  if (process.env.NODE_ENV === "production") {
+    return true;
+  }
+
+  const forwardedProto = req.get("x-forwarded-proto");
+  if (forwardedProto?.split(",")[0]?.trim() === "https") {
+    return true;
+  }
+
+  const requestOrigin = req.get("origin");
+  if (requestOrigin?.startsWith("https://")) {
+    return true;
+  }
+
+  return (process.env.RENDER_EXTERNAL_URL || "").startsWith("https://");
+};
+
+const buildCookieOptions = (
+  req: Request,
+  maxAge: number,
+  httpOnly: boolean
+): CookieOptions => {
+  const secure = shouldUseSecureCookies(req);
+
+  return {
+    httpOnly,
+    sameSite: secure ? "none" : "lax",
+    secure,
+    maxAge,
+    path: "/"
+  };
+};
+
 const setAuthCookies = (
+  req: Request,
   res: Response,
   accessToken: string,
   refreshToken: string,
   csrfToken: string
 ) => {
-  const secure = process.env.NODE_ENV === "production";
-  const sameSite: "lax" | "none" = secure ? "none" : "lax";
-  res.cookie("accessToken", accessToken, {
-    httpOnly: true,
-    sameSite,
+  res.cookie(
+    "accessToken",
+    accessToken,
+    buildCookieOptions(req, 15 * 60 * 1000, true)
+  );
+  res.cookie(
+    "refreshToken",
+    refreshToken,
+    buildCookieOptions(req, 30 * 24 * 60 * 60 * 1000, true)
+  );
+  res.cookie(
+    "csrfToken",
+    csrfToken,
+    buildCookieOptions(req, 30 * 24 * 60 * 60 * 1000, false)
+  );
+};
+
+const clearAuthCookies = (req: Request, res: Response) => {
+  const secure = shouldUseSecureCookies(req);
+  const base = {
+    sameSite: secure ? "none" : "lax",
     secure,
-    maxAge: 15 * 60 * 1000
-  });
-  res.cookie("refreshToken", refreshToken, {
-    httpOnly: true,
-    sameSite,
-    secure,
-    maxAge: 30 * 24 * 60 * 60 * 1000
-  });
-  res.cookie("csrfToken", csrfToken, {
-    httpOnly: false,
-    sameSite,
-    secure,
-    maxAge: 30 * 24 * 60 * 60 * 1000
-  });
+    path: "/"
+  } as const;
+
+  res.clearCookie("accessToken", { ...base, httpOnly: true });
+  res.clearCookie("refreshToken", { ...base, httpOnly: true });
+  res.clearCookie("csrfToken", { ...base, httpOnly: false });
 };
 
 router.post("/signup", validateBody(signupSchema), async (req, res, next) => {
@@ -104,7 +147,7 @@ router.post("/signup", validateBody(signupSchema), async (req, res, next) => {
       }
     });
 
-    setAuthCookies(res, accessToken, refreshToken, csrfToken);
+    setAuthCookies(req, res, accessToken, refreshToken, csrfToken);
 
     return res.status(201).json({
       success: true,
@@ -160,7 +203,7 @@ router.post("/login", validateBody(loginSchema), async (req, res, next) => {
       data: { lastLoginAt: new Date() }
     });
 
-    setAuthCookies(res, accessToken, refreshToken, csrfToken);
+    setAuthCookies(req, res, accessToken, refreshToken, csrfToken);
 
     return res.json({
       success: true,
@@ -249,7 +292,7 @@ router.post("/google", async (req, res, next) => {
       }
     });
 
-    setAuthCookies(res, accessToken, refreshToken, csrfToken);
+    setAuthCookies(req, res, accessToken, refreshToken, csrfToken);
 
     return res.json({
       success: true,
@@ -277,9 +320,7 @@ router.post("/logout", async (req, res) => {
     });
   }
 
-  res.clearCookie("accessToken");
-  res.clearCookie("refreshToken");
-  res.clearCookie("csrfToken");
+  clearAuthCookies(req, res);
 
   return res.json({ success: true, data: {}, message: "Logged out" });
 });
@@ -331,7 +372,7 @@ router.post("/refresh", async (req, res) => {
       }
     });
 
-    setAuthCookies(res, accessToken, newRefreshToken, csrfToken);
+    setAuthCookies(req, res, accessToken, newRefreshToken, csrfToken);
 
     return res.json({
       success: true,

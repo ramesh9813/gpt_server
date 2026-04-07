@@ -19,6 +19,8 @@ import runnerRoutes from "./modules/runner/runner.routes";
 
 const app = express();
 
+app.set("trust proxy", 1);
+
 app.use(pinoHttp({ logger: logger as any }));
 app.use(
   helmet({
