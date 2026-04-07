@@ -19,7 +19,7 @@ import runnerRoutes from "./modules/runner/runner.routes";
 
 const app = express();
 
-app.use(pinoHttp({ logger }));
+app.use(pinoHttp({ logger: logger as any }));
 app.use(helmet());
 const allowedOrigins = env.APP_ORIGIN.split(",")
   .map((origin) => origin.trim())

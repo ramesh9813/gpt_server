@@ -13,7 +13,7 @@ const run = async () => {
       email: "demo@example.com",
       passwordHash,
       name: "Demo User",
-      role: "USER",
+      role: "user",
       settings: { create: {} }
     }
   });

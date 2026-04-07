@@ -4,6 +4,7 @@ import { prisma } from "../../lib/prisma";
 import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 import { env } from "../../lib/config";
+import { resolveModelForRole } from "../../lib/openrouter";
 
 const router = Router();
 
@@ -59,6 +60,18 @@ router.post(
         error: { code: "NOT_FOUND", message: "Conversation not found" }
       });
     }
+
+    const resolvedModel = await resolveModelForRole(req.user!.role, model);
+    if (!resolvedModel.ok) {
+      return res.status(resolvedModel.status).json({
+        success: false,
+        error: {
+          code: resolvedModel.code,
+          message: resolvedModel.message
+        }
+      });
+    }
+    const selectedModel = resolvedModel.model;
 
     let userMsgContent = userMessage || "";
     if (existingUserMessageId) {
@@ -148,13 +161,13 @@ router.post(
       const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${env.OROUTER_API_KEY}`,
+          Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
           "Content-Type": "application/json",
           "HTTP-Referer": env.APP_ORIGIN,
           "X-Title": "ChatUI"
         },
         body: JSON.stringify({
-          model: model || env.OPENROUTER_MODEL_DEFAULT,
+          model: selectedModel,
           messages,
           stream: true
         }),
@@ -236,7 +249,7 @@ router.post(
         data: {
           content: assistantContent,
           status: "COMPLETE",
-          model: model || env.OPENROUTER_MODEL_DEFAULT,
+          model: selectedModel,
           promptTokens: usage?.prompt_tokens,
           completionTokens: usage?.completion_tokens,
           tokenCount: usage?.total_tokens
@@ -257,7 +270,7 @@ router.post(
           data: {
             content: assistantContent,
             status: "COMPLETE",
-            model: model || env.OPENROUTER_MODEL_DEFAULT
+            model: selectedModel
           }
         });
         await prisma.conversation.update({

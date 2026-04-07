@@ -3,8 +3,15 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  owner
+  premium
+  lite
+  user
 }
 
 model User {
@@ -12,7 +19,7 @@ model User {
   email        String         @unique
   passwordHash String
   name         String?
-  role         String         @default("USER")
+  role         UserRole       @default(user)
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
   lastLoginAt  DateTime?

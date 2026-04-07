@@ -2,10 +2,11 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { env } from "./config";
+import { UserRole } from "./userRoles";
 
 export type JwtPayload = {
   sub: string;
-  role: "USER" | "ADMIN";
+  role: UserRole;
 };
 
 export const hashPassword = async (password: string) => {

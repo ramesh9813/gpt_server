@@ -84,7 +84,7 @@ router.post("/signup", validateBody(signupSchema), async (req, res, next) => {
         email,
         passwordHash,
         name,
-        role: "USER",
+        role: "user",
         settings: {
           create: {}
         }
@@ -221,7 +221,7 @@ router.post("/google", async (req, res, next) => {
         email,
         passwordHash,
         name: decoded.name || null,
-        role: "USER",
+        role: "user",
         settings: {
           create: {}
         }
