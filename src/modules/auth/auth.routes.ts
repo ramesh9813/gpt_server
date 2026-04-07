@@ -48,21 +48,22 @@ const setAuthCookies = (
   csrfToken: string
 ) => {
   const secure = process.env.NODE_ENV === "production";
+  const sameSite: "lax" | "none" = secure ? "none" : "lax";
   res.cookie("accessToken", accessToken, {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite,
     secure,
     maxAge: 15 * 60 * 1000
   });
   res.cookie("refreshToken", refreshToken, {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite,
     secure,
     maxAge: 30 * 24 * 60 * 60 * 1000
   });
   res.cookie("csrfToken", csrfToken, {
     httpOnly: false,
-    sameSite: "lax",
+    sameSite,
     secure,
     maxAge: 30 * 24 * 60 * 60 * 1000
   });
