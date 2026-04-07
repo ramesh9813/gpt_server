@@ -1,0 +1,255 @@
+{
+  "meta": {
+    "name": "ChatUI Backend Test Payloads",
+    "baseUrl": "http://localhost:5000",
+    "notes": [
+      "After login or signup, keep the returned cookies for protected routes.",
+      "For protected POST/PATCH/DELETE routes, send the csrfToken cookie value back as the x-csrf-token header.",
+      "Replace placeholder ids like <conversationId>, <folderId>, and <messageId> with real values from previous responses."
+    ]
+  },
+  "testFlow": [
+    "POST /api/auth/signup",
+    "POST /api/auth/login",
+    "GET /api/me",
+    "POST /api/folders",
+    "POST /api/conversations",
+    "GET /api/conversations",
+    "POST /api/conversations/<conversationId>/messages",
+    "POST /api/chat/stream",
+    "GET /api/conversations/<conversationId>/messages",
+    "GET /api/models",
+    "POST /api/runner/execute"
+  ],
+  "requests": {
+    "health": {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    "auth": {
+      "signup": {
+        "method": "POST",
+        "path": "/api/auth/signup",
+        "body": {
+          "email": "manual_user@example.com",
+          "password": "StrongPass123!",
+          "name": "Manual User"
+        }
+      },
+      "login": {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "body": {
+          "email": "manual_user@example.com",
+          "password": "StrongPass123!"
+        }
+      },
+      "google": {
+        "method": "POST",
+        "path": "/api/auth/google",
+        "headers": {
+          "Authorization": "Bearer <firebase_id_token>"
+        }
+      },
+      "logout": {
+        "method": "POST",
+        "path": "/api/auth/logout"
+      },
+      "refresh": {
+        "method": "POST",
+        "path": "/api/auth/refresh"
+      }
+    },
+    "users": {
+      "me": {
+        "method": "GET",
+        "path": "/api/me"
+      },
+      "settingsGet": {
+        "method": "GET",
+        "path": "/api/me/settings"
+      },
+      "settingsPatch": {
+        "method": "PATCH",
+        "path": "/api/me/settings",
+        "body": {
+          "theme": "DARK",
+          "accentColor": "#74aa9c",
+          "fontScale": "DEFAULT"
+        }
+      },
+      "usage": {
+        "method": "GET",
+        "path": "/api/me/usage?range=year"
+      }
+    },
+    "folders": {
+      "create": {
+        "method": "POST",
+        "path": "/api/folders",
+        "body": {
+          "name": "My Folder"
+        }
+      },
+      "list": {
+        "method": "GET",
+        "path": "/api/folders"
+      },
+      "rename": {
+        "method": "PATCH",
+        "path": "/api/folders/<folderId>",
+        "body": {
+          "name": "Renamed Folder"
+        }
+      },
+      "delete": {
+        "method": "DELETE",
+        "path": "/api/folders/<folderId>"
+      }
+    },
+    "conversations": {
+      "createWithoutFolder": {
+        "method": "POST",
+        "path": "/api/conversations",
+        "body": {}
+      },
+      "createWithFolder": {
+        "method": "POST",
+        "path": "/api/conversations",
+        "body": {
+          "folderId": "<folderId>"
+        }
+      },
+      "list": {
+        "method": "GET",
+        "path": "/api/conversations?search=&page=1&limit=20"
+      },
+      "getOne": {
+        "method": "GET",
+        "path": "/api/conversations/<conversationId>"
+      },
+      "rename": {
+        "method": "PATCH",
+        "path": "/api/conversations/<conversationId>",
+        "body": {
+          "title": "Manual Chat Title"
+        }
+      },
+      "moveToFolder": {
+        "method": "PATCH",
+        "path": "/api/conversations/<conversationId>",
+        "body": {
+          "folderId": "<folderId>"
+        }
+      },
+      "removeFromFolder": {
+        "method": "PATCH",
+        "path": "/api/conversations/<conversationId>",
+        "body": {
+          "folderId": null
+        }
+      },
+      "archive": {
+        "method": "PATCH",
+        "path": "/api/conversations/<conversationId>",
+        "body": {
+          "archived": true
+        }
+      },
+      "unarchive": {
+        "method": "PATCH",
+        "path": "/api/conversations/<conversationId>",
+        "body": {
+          "archived": false
+        }
+      },
+      "delete": {
+        "method": "DELETE",
+        "path": "/api/conversations/<conversationId>"
+      }
+    },
+    "messages": {
+      "list": {
+        "method": "GET",
+        "path": "/api/conversations/<conversationId>/messages"
+      },
+      "createUser": {
+        "method": "POST",
+        "path": "/api/conversations/<conversationId>/messages",
+        "body": {
+          "content": "Hello from manual API test",
+          "role": "USER"
+        }
+      },
+      "createSystem": {
+        "method": "POST",
+        "path": "/api/conversations/<conversationId>/messages",
+        "body": {
+          "content": "You are a concise assistant.",
+          "role": "SYSTEM"
+        }
+      },
+      "editUserMessage": {
+        "method": "PATCH",
+        "path": "/api/conversations/<conversationId>/messages/<messageId>",
+        "body": {
+          "content": "Edited message content",
+          "pruneFollowing": true
+        }
+      }
+    },
+    "chat": {
+      "streamWithNewUserMessage": {
+        "method": "POST",
+        "path": "/api/chat/stream",
+        "body": {
+          "conversationId": "<conversationId>",
+          "userMessage": "Write a short hello world in Python.",
+          "model": "qwen/qwen-2.5-7b-instruct:free"
+        }
+      },
+      "streamWithExistingMessage": {
+        "method": "POST",
+        "path": "/api/chat/stream",
+        "body": {
+          "conversationId": "<conversationId>",
+          "existingUserMessageId": "<messageId>",
+          "model": "qwen/qwen-2.5-7b-instruct:free"
+        }
+      },
+      "streamWithSystemPrompt": {
+        "method": "POST",
+        "path": "/api/chat/stream",
+        "body": {
+          "conversationId": "<conversationId>",
+          "userMessage": "Summarize this app.",
+          "systemPrompt": "Answer in 3 bullet points only."
+        }
+      }
+    },
+    "models": {
+      "list": {
+        "method": "GET",
+        "path": "/api/models"
+      }
+    },
+    "runner": {
+      "python": {
+        "method": "POST",
+        "path": "/api/runner/execute",
+        "body": {
+          "language": "python",
+          "code": "print('hello from runner')"
+        }
+      },
+      "javascript": {
+        "method": "POST",
+        "path": "/api/runner/execute",
+        "body": {
+          "language": "javascript",
+          "code": "console.log('hello from runner')"
+        }
+      }
+    }
+  }
+}
