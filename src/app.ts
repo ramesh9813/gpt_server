@@ -22,13 +22,13 @@ const app = express();
 app.use(pinoHttp({ logger: logger as any }));
 app.use(
   helmet({
-    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" }
+    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+    crossOriginEmbedderPolicy: false
   })
 );
 const allowedOrigins = env.APP_ORIGIN.split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
-const isDev = process.env.NODE_ENV !== "production";
 
 app.use(
   cors({
@@ -37,8 +37,9 @@ app.use(
         return callback(null, true);
       }
       const isAllowed = allowedOrigins.includes(origin);
-      const isLocalhost =
-        isDev && /^https?:\/\/localhost:\d+$/.test(origin);
+      const isLocalhost = /^https?:\/\/(?:localhost|127\.0\.0\.1)(:\d+)?$/.test(
+        origin
+      );
       if (isAllowed || isLocalhost) {
         return callback(null, true);
       }
