@@ -1,255 +1,680 @@
 {
-  "meta": {
-    "name": "ChatUI Backend Test Payloads",
-    "baseUrl": "http://localhost:5000",
-    "notes": [
-      "After login or signup, keep the returned cookies for protected routes.",
-      "For protected POST/PATCH/DELETE routes, send the csrfToken cookie value back as the x-csrf-token header.",
-      "Replace placeholder ids like <conversationId>, <folderId>, and <messageId> with real values from previous responses."
-    ]
+  "info": {
+    "_postman_id": "2b398b42-c3aa-4c37-9605-31dd4d0f7e2e",
+    "name": "ChatUI Backend API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Postman collection for the main ChatUI backend routes. Cookies should be persisted by Postman automatically. For protected write routes, the x-csrf-token header uses the collection variable captured after signup/login."
   },
-  "testFlow": [
-    "POST /api/auth/signup",
-    "POST /api/auth/login",
-    "GET /api/me",
-    "POST /api/folders",
-    "POST /api/conversations",
-    "GET /api/conversations",
-    "POST /api/conversations/<conversationId>/messages",
-    "POST /api/chat/stream",
-    "GET /api/conversations/<conversationId>/messages",
-    "GET /api/models",
-    "POST /api/runner/execute"
-  ],
-  "requests": {
-    "health": {
-      "method": "GET",
-      "path": "/api/health"
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000"
     },
-    "auth": {
-      "signup": {
-        "method": "POST",
-        "path": "/api/auth/signup",
-        "body": {
-          "email": "manual_user@example.com",
-          "password": "StrongPass123!",
-          "name": "Manual User"
-        }
-      },
-      "login": {
-        "method": "POST",
-        "path": "/api/auth/login",
-        "body": {
-          "email": "manual_user@example.com",
-          "password": "StrongPass123!"
-        }
-      },
-      "google": {
-        "method": "POST",
-        "path": "/api/auth/google",
-        "headers": {
-          "Authorization": "Bearer <firebase_id_token>"
-        }
-      },
-      "logout": {
-        "method": "POST",
-        "path": "/api/auth/logout"
-      },
-      "refresh": {
-        "method": "POST",
-        "path": "/api/auth/refresh"
-      }
+    {
+      "key": "email",
+      "value": "manual_user@example.com"
     },
-    "users": {
-      "me": {
-        "method": "GET",
-        "path": "/api/me"
-      },
-      "settingsGet": {
-        "method": "GET",
-        "path": "/api/me/settings"
-      },
-      "settingsPatch": {
-        "method": "PATCH",
-        "path": "/api/me/settings",
-        "body": {
-          "theme": "DARK",
-          "accentColor": "#74aa9c",
-          "fontScale": "DEFAULT"
-        }
-      },
-      "usage": {
-        "method": "GET",
-        "path": "/api/me/usage?range=year"
-      }
+    {
+      "key": "password",
+      "value": "StrongPass123!"
     },
-    "folders": {
-      "create": {
-        "method": "POST",
-        "path": "/api/folders",
-        "body": {
-          "name": "My Folder"
-        }
-      },
-      "list": {
-        "method": "GET",
-        "path": "/api/folders"
-      },
-      "rename": {
-        "method": "PATCH",
-        "path": "/api/folders/<folderId>",
-        "body": {
-          "name": "Renamed Folder"
-        }
-      },
-      "delete": {
-        "method": "DELETE",
-        "path": "/api/folders/<folderId>"
-      }
+    {
+      "key": "name",
+      "value": "Manual User"
     },
-    "conversations": {
-      "createWithoutFolder": {
-        "method": "POST",
-        "path": "/api/conversations",
-        "body": {}
-      },
-      "createWithFolder": {
-        "method": "POST",
-        "path": "/api/conversations",
-        "body": {
-          "folderId": "<folderId>"
-        }
-      },
-      "list": {
-        "method": "GET",
-        "path": "/api/conversations?search=&page=1&limit=20"
-      },
-      "getOne": {
-        "method": "GET",
-        "path": "/api/conversations/<conversationId>"
-      },
-      "rename": {
-        "method": "PATCH",
-        "path": "/api/conversations/<conversationId>",
-        "body": {
-          "title": "Manual Chat Title"
-        }
-      },
-      "moveToFolder": {
-        "method": "PATCH",
-        "path": "/api/conversations/<conversationId>",
-        "body": {
-          "folderId": "<folderId>"
-        }
-      },
-      "removeFromFolder": {
-        "method": "PATCH",
-        "path": "/api/conversations/<conversationId>",
-        "body": {
-          "folderId": null
-        }
-      },
-      "archive": {
-        "method": "PATCH",
-        "path": "/api/conversations/<conversationId>",
-        "body": {
-          "archived": true
-        }
-      },
-      "unarchive": {
-        "method": "PATCH",
-        "path": "/api/conversations/<conversationId>",
-        "body": {
-          "archived": false
-        }
-      },
-      "delete": {
-        "method": "DELETE",
-        "path": "/api/conversations/<conversationId>"
-      }
+    {
+      "key": "csrfToken",
+      "value": ""
     },
-    "messages": {
-      "list": {
-        "method": "GET",
-        "path": "/api/conversations/<conversationId>/messages"
-      },
-      "createUser": {
-        "method": "POST",
-        "path": "/api/conversations/<conversationId>/messages",
-        "body": {
-          "content": "Hello from manual API test",
-          "role": "USER"
-        }
-      },
-      "createSystem": {
-        "method": "POST",
-        "path": "/api/conversations/<conversationId>/messages",
-        "body": {
-          "content": "You are a concise assistant.",
-          "role": "SYSTEM"
-        }
-      },
-      "editUserMessage": {
-        "method": "PATCH",
-        "path": "/api/conversations/<conversationId>/messages/<messageId>",
-        "body": {
-          "content": "Edited message content",
-          "pruneFollowing": true
-        }
-      }
+    {
+      "key": "conversationId",
+      "value": ""
     },
-    "chat": {
-      "streamWithNewUserMessage": {
-        "method": "POST",
-        "path": "/api/chat/stream",
-        "body": {
-          "conversationId": "<conversationId>",
-          "userMessage": "Write a short hello world in Python.",
-          "model": "qwen/qwen-2.5-7b-instruct:free"
-        }
-      },
-      "streamWithExistingMessage": {
-        "method": "POST",
-        "path": "/api/chat/stream",
-        "body": {
-          "conversationId": "<conversationId>",
-          "existingUserMessageId": "<messageId>",
-          "model": "qwen/qwen-2.5-7b-instruct:free"
-        }
-      },
-      "streamWithSystemPrompt": {
-        "method": "POST",
-        "path": "/api/chat/stream",
-        "body": {
-          "conversationId": "<conversationId>",
-          "userMessage": "Summarize this app.",
-          "systemPrompt": "Answer in 3 bullet points only."
-        }
-      }
+    {
+      "key": "folderId",
+      "value": ""
     },
-    "models": {
-      "list": {
-        "method": "GET",
-        "path": "/api/models"
-      }
+    {
+      "key": "messageId",
+      "value": ""
     },
-    "runner": {
-      "python": {
-        "method": "POST",
-        "path": "/api/runner/execute",
-        "body": {
-          "language": "python",
-          "code": "print('hello from runner')"
-        }
-      },
-      "javascript": {
-        "method": "POST",
-        "path": "/api/runner/execute",
-        "body": {
-          "language": "javascript",
-          "code": "console.log('hello from runner')"
-        }
-      }
+    {
+      "key": "firebaseIdToken",
+      "value": ""
     }
-  }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "POST Signup",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) {",
+                  "  const csrf = pm.cookies.get('csrfToken');",
+                  "  if (csrf) pm.collectionVariables.set('csrfToken', csrf);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\",\n  \"name\": \"{{name}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/signup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "signup"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) {",
+                  "  const csrf = pm.cookies.get('csrfToken');",
+                  "  if (csrf) pm.collectionVariables.set('csrfToken', csrf);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST Google Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebaseIdToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/google",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "google"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST Refresh",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "refresh"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-csrf-token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "logout"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "User",
+      "item": [
+        {
+          "name": "GET Me",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET Settings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/me/settings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "settings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "PATCH Settings",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-csrf-token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"theme\": \"DARK\",\n  \"accentColor\": \"#74aa9c\",\n  \"fontScale\": \"DEFAULT\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/me/settings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "settings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET Usage",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/me/usage?range=year",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "usage"
+              ],
+              "query": [
+                {
+                  "key": "range",
+                  "value": "year"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Folders",
+      "item": [
+        {
+          "name": "POST Create Folder",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "try {",
+                  "  const json = pm.response.json();",
+                  "  const id = json?.data?.folder?.id;",
+                  "  if (id) pm.collectionVariables.set('folderId', id);",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-csrf-token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"My Folder\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/folders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "folders"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET Folders",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/folders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "folders"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Conversations",
+      "item": [
+        {
+          "name": "POST Create Conversation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "try {",
+                  "  const json = pm.response.json();",
+                  "  const id = json?.data?.conversation?.id;",
+                  "  if (id) pm.collectionVariables.set('conversationId', id);",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-csrf-token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/conversations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "conversations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET Conversations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/conversations?search=&page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "conversations"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": ""
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET Conversation By Id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/conversations/{{conversationId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "conversations",
+                "{{conversationId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Messages",
+      "item": [
+        {
+          "name": "POST Create User Message",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "try {",
+                  "  const json = pm.response.json();",
+                  "  const id = json?.data?.message?.id;",
+                  "  if (id) pm.collectionVariables.set('messageId', id);",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-csrf-token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"Hello from Postman manual test\",\n  \"role\": \"USER\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/conversations/{{conversationId}}/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "conversations",
+                "{{conversationId}}",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET Messages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/conversations/{{conversationId}}/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "conversations",
+                "{{conversationId}}",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "PATCH Edit User Message",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-csrf-token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"Edited message content\",\n  \"pruneFollowing\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/conversations/{{conversationId}}/messages/{{messageId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "conversations",
+                "{{conversationId}}",
+                "messages",
+                "{{messageId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chat",
+      "item": [
+        {
+          "name": "POST Chat Stream",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-csrf-token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"conversationId\": \"{{conversationId}}\",\n  \"userMessage\": \"Write a short hello world in Python.\",\n  \"model\": \"qwen/qwen-2.5-7b-instruct:free\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/chat/stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "chat",
+                "stream"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Models",
+      "item": [
+        {
+          "name": "GET Models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Runner",
+      "item": [
+        {
+          "name": "POST Runner Python",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-csrf-token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"language\": \"python\",\n  \"code\": \"print('hello from runner')\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/runner/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "runner",
+                "execute"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
 }
