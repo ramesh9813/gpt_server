@@ -11,7 +11,7 @@ import {
   hashToken,
   verifyRefreshToken
 } from "../../lib/auth";
-import { normalizeUserRole } from "../../lib/userRoles";
+import { effectiveRole, normalizeUserRole } from "../../lib/userRoles";
 import { validateBody } from "../../middleware/validate";
 
 const router = Router();
@@ -130,17 +130,19 @@ router.post("/signup", validateBody(signupSchema), async (req, res, next) => {
     }
 
     const passwordHash = await hashPassword(password);
+    const { isOwnerEmail } = await import("../../lib/userRoles");
     const user = await prisma.user.create({
       data: {
         email,
         passwordHash,
         name,
+        ...(isOwnerEmail(email) ? { role: "owner" as const } : {}),
         settings: {
           create: {}
         }
       }
     });
-    const normalizedRole = normalizeUserRole(user.role);
+    const normalizedRole = effectiveRole(user.email, user.role);
 
     const accessToken = signAccessToken({ sub: user.id, role: normalizedRole });
     const refreshToken = signRefreshToken({ sub: user.id, role: normalizedRole });
@@ -195,7 +197,7 @@ router.post("/login", validateBody(loginSchema), async (req, res, next) => {
         error: { code: "INVALID_CREDENTIALS", message: "Invalid credentials" }
       });
     }
-    const normalizedRole = normalizeUserRole(user.role);
+    const normalizedRole = effectiveRole(user.email, user.role);
 
     const accessToken = signAccessToken({ sub: user.id, role: normalizedRole });
     const refreshToken = signRefreshToken({ sub: user.id, role: normalizedRole });
@@ -211,7 +213,12 @@ router.post("/login", validateBody(loginSchema), async (req, res, next) => {
 
     await prisma.user.update({
       where: { id: user.id },
-      data: { lastLoginAt: new Date() }
+      data: {
+        lastLoginAt: new Date(),
+        ...(normalizedRole === "owner" && user.role !== "owner"
+          ? { role: "owner" as const }
+          : {})
+      }
     });
 
     setAuthCookies(req, res, accessToken, refreshToken, csrfToken);
@@ -283,22 +290,25 @@ router.post("/google", async (req, res, next) => {
     const randomPassword = crypto.randomBytes(32).toString("hex");
     const passwordHash = await hashPassword(randomPassword);
 
+    const { isOwnerEmail: isOwner } = await import("../../lib/userRoles");
     const user = await prisma.user.upsert({
       where: { email },
       update: {
         lastLoginAt: new Date(),
-        name: decoded.name || undefined
+        name: decoded.name || undefined,
+        ...(isOwner(email) ? { role: "owner" as const } : {})
       },
       create: {
         email,
         passwordHash,
         name: decoded.name || null,
+        ...(isOwner(email) ? { role: "owner" as const } : {}),
         settings: {
           create: {}
         }
       }
     });
-    const normalizedRole = normalizeUserRole(user.role);
+    const normalizedRole = effectiveRole(user.email, user.role);
 
     await prisma.userSettings.upsert({
       where: { userId: user.id },

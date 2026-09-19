@@ -8,9 +8,8 @@ datasource db {
 }
 
 enum UserRole {
+  admin
   owner
-  premium
-  lite
   user
 }
 

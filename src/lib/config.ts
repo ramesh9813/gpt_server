@@ -26,10 +26,17 @@ const envSchema = z.object({
   OPENROUTER_MODEL_DEFAULT_FREE: z.string().optional(),
   APP_ORIGIN: z.string().default("http://localhost:5173"),
   RUNNER_BASE_URL: z.string().default("https://emkc.org/api/v2/piston"),
-  RUNNER_TIMEOUT_MS: z.string().optional()
+  RUNNER_TIMEOUT_MS: z.string().optional(),
+  OWNER_EMAILS: z.string().default("rameshsingh9813@gmail.com")
 });
 
 export const env = envSchema.parse(normalizedEnv);
+
+export const ownerEmails: Set<string> = new Set(
+  env.OWNER_EMAILS.split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean)
+);
 
 if (process.env.NODE_ENV === "production") {
   if (
