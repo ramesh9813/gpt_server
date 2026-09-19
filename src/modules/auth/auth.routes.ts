@@ -377,7 +377,24 @@ router.post("/refresh", async (req, res) => {
 
   try {
     const payload = verifyRefreshToken(refreshToken);
-    const normalizedRole = normalizeUserRole(payload.role);
+    // Re-resolve role from the DB so upgrades (e.g. owner email) take effect
+    // instead of recycling the stale JWT role forever.
+    const dbUser = await prisma.user.findUnique({
+      where: { id: payload.sub }
+    });
+    if (!dbUser) {
+      return res.status(401).json({
+        success: false,
+        error: { code: "UNAUTHORIZED", message: "User not found" }
+      });
+    }
+    const normalizedRole = effectiveRole(dbUser.email, dbUser.role);
+    if (normalizedRole === "owner" && dbUser.role !== "owner") {
+      await prisma.user.update({
+        where: { id: dbUser.id },
+        data: { role: "owner" as const }
+      });
+    }
     const stored = await prisma.refreshToken.findFirst({
       where: {
         tokenHash: hashToken(refreshToken),
