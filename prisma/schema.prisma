@@ -7,10 +7,15 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// NOTE: premium/lite are legacy values kept only so `prisma db push` never has to
+// drop a live Postgres enum value (which fails and would prevent startup).
+// App logic treats exactly three roles: admin, owner, user.
 enum UserRole {
   admin
   owner
   user
+  premium
+  lite
 }
 
 model User {
