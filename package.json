@@ -5,10 +5,10 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "prisma generate && tsc",
+    "build": "prisma generate",
     "postinstall": "prisma generate",
-    "start": "prisma db push --skip-generate; (node dist/index.js || tsx src/index.ts)",
-    "start:prod": "node dist/index.js",
+    "start": "prisma db push --skip-generate && tsx src/index.ts",
+    "start:prod": "prisma db push --skip-generate && tsx src/index.ts",
     "start:dev": "tsx src/index.ts",
     "lint": "echo \"lint not configured\"",
     "test": "NODE_ENV=test jest --runInBand",
