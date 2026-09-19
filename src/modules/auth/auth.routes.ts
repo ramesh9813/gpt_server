@@ -2,7 +2,7 @@ import { CookieOptions, Request, Response, Router } from "express";
 import { z } from "zod";
 import crypto from "crypto";
 import { prisma } from "../../lib/prisma";
-import { firebaseAdmin } from "../../lib/firebaseAdmin";
+import { firebaseAdmin, isFirebaseConfigured } from "../../lib/firebaseAdmin";
 import {
   hashPassword,
   signAccessToken,
@@ -224,6 +224,16 @@ router.post("/login", validateBody(loginSchema), async (req, res, next) => {
 
 router.post("/google", async (req, res, next) => {
   try {
+    if (!isFirebaseConfigured || !firebaseAdmin) {
+      return res.status(503).json({
+        success: false,
+        error: {
+          code: "FIREBASE_NOT_CONFIGURED",
+          message: "Google authentication is not configured on this server."
+        }
+      });
+    }
+
     const token = getBearerToken(req.headers.authorization);
     if (!token) {
       return res.status(401).json({

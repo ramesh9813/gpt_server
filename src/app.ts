@@ -29,7 +29,7 @@ app.use(
   })
 );
 const allowedOrigins = env.APP_ORIGIN.split(",")
-  .map((origin) => origin.trim())
+  .map((origin) => origin.trim().replace(/\/+$/, ""))
   .filter(Boolean);
 
 app.use(
@@ -38,7 +38,8 @@ app.use(
       if (!origin) {
         return callback(null, true);
       }
-      const isAllowed = allowedOrigins.includes(origin);
+      const normalizedOrigin = origin.replace(/\/+$/, "");
+      const isAllowed = allowedOrigins.includes(normalizedOrigin);
       const isLocalhost = /^https?:\/\/(?:localhost|127\.0\.0\.1)(:\d+)?$/.test(
         origin
       );
@@ -65,6 +66,14 @@ const chatLimiter = rateLimit({
 const runnerLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 10
+});
+
+app.get("/", (_req, res) => {
+  res.json({ success: true, message: "ChatGPT API Server is running" });
+});
+
+app.get("/health", (_req, res) => {
+  res.json({ success: true, data: { status: "ok" } });
 });
 
 app.get("/api/health", (_req, res) => {

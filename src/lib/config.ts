@@ -12,11 +12,15 @@ const envSchema = z.object({
   DATABASE_URL: z
     .string()
     .default("postgresql://postgres:postgres@localhost:5432/chatui?schema=public"),
-  JWT_ACCESS_SECRET: z.string(),
-  JWT_REFRESH_SECRET: z.string(),
+  JWT_ACCESS_SECRET: z
+    .string()
+    .default("chatui-jwt-access-secret-fallback-key"),
+  JWT_REFRESH_SECRET: z
+    .string()
+    .default("chatui-jwt-refresh-secret-fallback-key"),
   OPENROUTER_API_KEY: isTest
     ? z.string().optional().default("test")
-    : z.string(),
+    : z.string().default(""),
   OPENROUTER_BASE_URL: z.string().default("https://openrouter.ai/api/v1"),
   OPENROUTER_MODEL_DEFAULT: z.string().default("openai/gpt-4o-mini"),
   OPENROUTER_MODEL_DEFAULT_FREE: z.string().optional(),
@@ -26,3 +30,20 @@ const envSchema = z.object({
 });
 
 export const env = envSchema.parse(normalizedEnv);
+
+if (process.env.NODE_ENV === "production") {
+  if (
+    env.JWT_ACCESS_SECRET === "chatui-jwt-access-secret-fallback-key" ||
+    env.JWT_REFRESH_SECRET === "chatui-jwt-refresh-secret-fallback-key"
+  ) {
+    console.warn(
+      "⚠️ [WARN] Using default JWT secrets in production. Please set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET in your Render environment variables."
+    );
+  }
+  if (!env.OPENROUTER_API_KEY) {
+    console.warn(
+      "⚠️ [WARN] OPENROUTER_API_KEY is not set. Chat completions will return an error until it is provided in Render environment variables."
+    );
+  }
+}
+

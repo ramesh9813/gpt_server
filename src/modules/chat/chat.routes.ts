@@ -137,6 +137,30 @@ router.post(
       messages.push({ role: mapRole(message.role), content: message.content });
     }
 
+    if (!env.OPENROUTER_API_KEY) {
+      await prisma.message.update({
+        where: { id: assistantMsg.id },
+        data: {
+          status: "ERROR",
+          error: "OPENROUTER_API_KEY is not configured on the server."
+        }
+      });
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive"
+      });
+      res.write(`event: error\n`);
+      res.write(
+        `data: ${JSON.stringify({
+          code: "CONFIG_ERROR",
+          message:
+            "OPENROUTER_API_KEY is not configured on the server. Please set it in your Render environment variables."
+        })}\n\n`
+      );
+      return res.end();
+    }
+
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
@@ -144,8 +168,15 @@ router.post(
     });
 
     const sendEvent = (event: string, data: unknown) => {
+      if (res.writableEnded || res.destroyed) return;
       res.write(`event: ${event}\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const safeEnd = () => {
+      if (!res.writableEnded && !res.destroyed) {
+        res.end();
+      }
     };
 
     const controller = new AbortController();
@@ -187,7 +218,7 @@ router.post(
           code: "OPENROUTER_ERROR",
           message: `OpenRouter error: ${errorText}`
         });
-        return res.end();
+        return safeEnd();
       }
 
       const reader = response.body.getReader();
@@ -262,7 +293,7 @@ router.post(
       });
 
       sendEvent("done", { messageId: assistantMsg.id, usage: usage || {} });
-      return res.end();
+      return safeEnd();
     } catch (err: any) {
       if (controller.signal.aborted) {
         await prisma.message.update({
@@ -277,7 +308,7 @@ router.post(
           where: { id: conversationId },
           data: { updatedAt: new Date() }
         });
-        return res.end();
+        return safeEnd();
       }
       console.error("Stream error:", err);
       await prisma.message.update({
@@ -288,7 +319,7 @@ router.post(
         code: "STREAM_ERROR",
         message: "Streaming failed"
       });
-      return res.end();
+      return safeEnd();
     }
   }
 );

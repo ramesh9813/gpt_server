@@ -1,13 +1,22 @@
 import fs from "fs";
 import path from "path";
 import admin from "firebase-admin";
+import { logger } from "./logger";
+
+let isFirebaseConfigured = false;
 
 const buildCredential = () => {
   const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
   if (serviceAccountPath) {
     const absolutePath = path.resolve(serviceAccountPath);
-    const raw = fs.readFileSync(absolutePath, "utf8");
-    return admin.credential.cert(JSON.parse(raw));
+    if (fs.existsSync(absolutePath)) {
+      const raw = fs.readFileSync(absolutePath, "utf8");
+      return admin.credential.cert(JSON.parse(raw));
+    }
+    logger.warn(
+      { path: absolutePath },
+      "FIREBASE_SERVICE_ACCOUNT_PATH specified but file does not exist"
+    );
   }
 
   const projectId = process.env.FIREBASE_PROJECT_ID;
@@ -21,14 +30,29 @@ const buildCredential = () => {
     });
   }
 
-  throw new Error(
-    "Missing Firebase credentials. Set FIREBASE_SERVICE_ACCOUNT_PATH or FIREBASE_PROJECT_ID/FIREBASE_CLIENT_EMAIL/FIREBASE_PRIVATE_KEY."
-  );
+  return null;
 };
 
-if (!admin.apps.length) {
+try {
   const credential = buildCredential();
-  admin.initializeApp({ credential });
+  if (credential) {
+    if (!admin.apps.length) {
+      admin.initializeApp({ credential });
+    }
+    isFirebaseConfigured = true;
+    logger.info("Firebase Admin SDK initialized successfully");
+  } else {
+    logger.warn(
+      "Firebase credentials not provided. Google authentication will be disabled."
+    );
+  }
+} catch (err) {
+  logger.warn(
+    { err },
+    "Failed to initialize Firebase Admin SDK. Google authentication will be disabled."
+  );
 }
 
-export const firebaseAdmin = admin;
+export const firebaseAdmin = isFirebaseConfigured ? admin : null;
+export { isFirebaseConfigured };
+
