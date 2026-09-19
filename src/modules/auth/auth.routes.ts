@@ -66,13 +66,19 @@ const buildCookieOptions = (
 ): CookieOptions => {
   const secure = shouldUseSecureCookies(req);
 
-  return {
+  const options: CookieOptions = {
     httpOnly,
     sameSite: secure ? "none" : "lax",
     secure,
     maxAge,
     path: "/"
   };
+
+  if (secure) {
+    (options as any).partitioned = true;
+  }
+
+  return options;
 };
 
 const setAuthCookies = (
@@ -157,6 +163,11 @@ router.post("/signup", validateBody(signupSchema), async (req, res, next) => {
           email: user.email,
           name: user.name,
           role: normalizedRole
+        },
+        tokens: {
+          accessToken,
+          refreshToken,
+          csrfToken
         }
       },
       message: "Signup successful"
@@ -213,6 +224,11 @@ router.post("/login", validateBody(loginSchema), async (req, res, next) => {
           email: user.email,
           name: user.name,
           role: normalizedRole
+        },
+        tokens: {
+          accessToken,
+          refreshToken,
+          csrfToken
         }
       },
       message: "Login successful"
@@ -312,6 +328,11 @@ router.post("/google", async (req, res, next) => {
           email: user.email,
           name: user.name,
           role: normalizedRole
+        },
+        tokens: {
+          accessToken,
+          refreshToken,
+          csrfToken
         }
       },
       message: "Google login successful"
@@ -322,7 +343,7 @@ router.post("/google", async (req, res, next) => {
 });
 
 router.post("/logout", async (req, res) => {
-  const refreshToken = req.cookies?.refreshToken;
+  const refreshToken = req.body?.refreshToken || req.cookies?.refreshToken;
   if (refreshToken) {
     await prisma.refreshToken.updateMany({
       where: { tokenHash: hashToken(refreshToken), revokedAt: null },
@@ -336,7 +357,7 @@ router.post("/logout", async (req, res) => {
 });
 
 router.post("/refresh", async (req, res) => {
-  const refreshToken = req.cookies?.refreshToken;
+  const refreshToken = req.body?.refreshToken || req.cookies?.refreshToken;
   if (!refreshToken) {
     return res.status(401).json({
       success: false,
@@ -386,7 +407,14 @@ router.post("/refresh", async (req, res) => {
 
     return res.json({
       success: true,
-      data: { accessTokenExpiresIn: 900 },
+      data: {
+        accessTokenExpiresIn: 900,
+        tokens: {
+          accessToken,
+          refreshToken: newRefreshToken,
+          csrfToken
+        }
+      },
       message: "Refreshed"
     });
   } catch {

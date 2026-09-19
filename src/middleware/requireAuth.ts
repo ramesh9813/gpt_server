@@ -7,7 +7,13 @@ export const requireAuth = (
   res: Response,
   next: NextFunction
 ) => {
-  const token = req.cookies?.accessToken;
+  const authHeader = req.headers.authorization;
+  const bearerToken =
+    authHeader && authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : null;
+  const token = bearerToken || req.cookies?.accessToken;
+
   if (!token) {
     return res.status(401).json({
       success: false,
