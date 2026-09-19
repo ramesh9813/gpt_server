@@ -8,23 +8,58 @@ import { resolveModelForRole } from "../../lib/openrouter";
 
 const router = Router();
 
-const streamSchema = z.object({
-  conversationId: z.string(),
-  userMessage: z.string().min(1).max(8000).optional(),
-  existingUserMessageId: z.string().optional(),
-  model: z.string().optional(),
-  systemPrompt: z.string().optional()
-})
-.refine((data) => data.userMessage || data.existingUserMessageId, {
-  message: "userMessage or existingUserMessageId is required"
-})
-.refine((data) => !(data.userMessage && data.existingUserMessageId), {
-  message: "Provide either userMessage or existingUserMessageId"
-});
+// Vision: inline base64 dataURLs, no storage/S3. Keep small to fit 10mb JSON body.
+const MAX_IMAGES = 3;
+const MAX_IMAGE_STRING_LENGTH = 7 * 1024 * 1024; // ~7MB string each (~5MB binary + base64 overhead)
+const IMAGE_PREFIX_REGEX = /^data:image\/(jpeg|jpg|png|webp|gif);base64,/;
+
+const imageDataUrlSchema = z
+  .string()
+  .max(MAX_IMAGE_STRING_LENGTH, "Each image must be under ~7MB")
+  .refine((v) => IMAGE_PREFIX_REGEX.test(v.slice(0, 50)), {
+    message: "images must be dataURL jpeg/png/webp/gif base64"
+  })
+  .refine((v) => v.length > 30, {
+    message: "images must contain base64 payload"
+  });
+
+const streamSchema = z
+  .object({
+    conversationId: z.string(),
+    userMessage: z.string().min(1).max(8000).optional(),
+    existingUserMessageId: z.string().optional(),
+    images: z.array(imageDataUrlSchema).max(MAX_IMAGES).optional(),
+    model: z.string().optional(),
+    systemPrompt: z.string().optional()
+  })
+  .refine(
+    (data) =>
+      data.userMessage ||
+      data.existingUserMessageId ||
+      (data.images && data.images.length > 0),
+    {
+      message: "userMessage or existingUserMessageId or images is required"
+    }
+  )
+  .refine((data) => !(data.userMessage && data.existingUserMessageId), {
+    message: "Provide either userMessage or existingUserMessageId"
+  });
+
+type OpenRouterTextPart = {
+  type: "text";
+  text: string;
+};
+
+type OpenRouterImagePart = {
+  type: "image_url";
+  image_url: { url: string };
+};
+
+type OpenRouterContent = string | Array<OpenRouterTextPart | OpenRouterImagePart>;
 
 type OpenRouterMessage = {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: OpenRouterContent;
 };
 
 const mapRole = (role: string): OpenRouterMessage["role"] => {
@@ -32,6 +67,47 @@ const mapRole = (role: string): OpenRouterMessage["role"] => {
   if (role === "ASSISTANT") return "assistant";
   return "user";
 };
+
+const buildUserContent = (text: string, images?: string[]): OpenRouterContent => {
+  if (!images || images.length === 0) return text;
+  const safeText =
+    text && text.trim().length > 0
+      ? text
+      : "Describe the attached image(s) in detail.";
+  return [
+    { type: "text", text: safeText },
+    ...images.map((url) => ({
+      type: "image_url" as const,
+      image_url: { url }
+    }))
+  ];
+};
+
+const getStoredImages = (msg: unknown): string[] => {
+  const raw = (msg as { images?: unknown }).images;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (v): v is string => typeof v === "string" && v.startsWith("data:image/")
+  );
+};
+
+// Avoid dumping multi-MB base64 into logs.
+const redactForLog = (messages: OpenRouterMessage[]) =>
+  messages.map((m) => {
+    if (typeof m.content === "string") return m;
+    return {
+      ...m,
+      content: (m.content as Array<OpenRouterTextPart | OpenRouterImagePart>).map(
+        (p) =>
+          p.type === "image_url"
+            ? {
+                type: p.type,
+                image_url: { url: `[omitted dataURL length=${p.image_url.url.length}]` }
+              }
+            : p
+      )
+    };
+  });
 
 router.post(
   "/stream",
@@ -42,8 +118,16 @@ router.post(
       conversationId,
       userMessage,
       existingUserMessageId,
+      images,
       model,
       systemPrompt
+    }: {
+      conversationId: string;
+      userMessage?: string;
+      existingUserMessageId?: string;
+      images?: string[];
+      model?: string;
+      systemPrompt?: string;
     } = req.body;
 
     const conversation = await prisma.conversation.findFirst({
@@ -74,6 +158,7 @@ router.post(
     const selectedModel = resolvedModel.model;
 
     let userMsgContent = userMessage || "";
+    let userImages: string[] = Array.isArray(images) ? images : [];
     if (existingUserMessageId) {
       const existingMessage = await prisma.message.findFirst({
         where: {
@@ -91,15 +176,20 @@ router.post(
       }
 
       userMsgContent = existingMessage.content;
-    } else if (userMessage) {
-      const userMsg = await prisma.message.create({
+      // Retry path: re-hydrate images from DB so client doesn't resend base64.
+      // Request images (if any) are ignored when existingUserMessageId is set.
+      userImages = getStoredImages(existingMessage);
+    } else if (userMessage || userImages.length > 0) {
+      await prisma.message.create({
         data: {
           conversationId,
           role: "USER",
-          content: userMessage,
+          content: userMessage ?? "",
+          images: userImages.length > 0 ? userImages : undefined,
           status: "COMPLETE"
         }
       });
+      userMsgContent = userMessage ?? "";
     }
 
     const trimmedTitle = userMsgContent.trim().replace(/\s+/g, " ");
@@ -134,7 +224,13 @@ router.post(
     }
 
     for (const message of history) {
-      messages.push({ role: mapRole(message.role), content: message.content });
+      const role = mapRole(message.role);
+      if (role === "user") {
+        const stored = getStoredImages(message);
+        messages.push({ role, content: buildUserContent(message.content, stored) });
+      } else {
+        messages.push({ role, content: message.content });
+      }
     }
 
     if (!env.OPENROUTER_API_KEY) {
@@ -186,7 +282,10 @@ router.post(
     let lastPersistedLength = 0;
     let lastPersistedAt = Date.now();
 
-    console.log("Sending messages to OpenRouter:", JSON.stringify(messages, null, 2));
+    console.log(
+      "Sending messages to OpenRouter:",
+      JSON.stringify(redactForLog(messages), null, 2)
+    );
 
     try {
       const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {

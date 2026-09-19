@@ -6,9 +6,24 @@ import { validateBody } from "../../middleware/validate";
 
 const router = Router();
 
+// Vision: inline base64 dataURLs, no storage. Same limits as chat /stream.
+const MAX_IMAGES = 3;
+const MAX_IMAGE_STRING_LENGTH = 7 * 1024 * 1024;
+const IMAGE_PREFIX_REGEX = /^data:image\/(jpeg|jpg|png|webp|gif);base64,/;
+
+const imageDataUrlSchema = z
+  .string()
+  .max(MAX_IMAGE_STRING_LENGTH, "Each image must be under ~7MB")
+  .refine((v) => IMAGE_PREFIX_REGEX.test(v.slice(0, 50)), {
+    message: "images must be dataURL jpeg/png/webp/gif base64"
+  });
+
+const imagesSchema = z.array(imageDataUrlSchema).max(MAX_IMAGES).optional();
+
 const createMessageSchema = z.object({
   content: z.string().min(1).max(8000),
-  role: z.enum(["USER", "SYSTEM"]).optional()
+  role: z.enum(["USER", "SYSTEM"]).optional(),
+  images: imagesSchema
 });
 
 const updateMessageSchema = z.object({
@@ -37,6 +52,7 @@ router.get("/:id/messages", requireAuth, async (req, res) => {
     orderBy: { createdAt: "asc" }
   });
 
+  // images Json field (if present) is returned inline with each message.
   return res.json({ success: true, data: { messages } });
 });
 
@@ -65,6 +81,7 @@ router.post(
         conversationId: conversation.id,
         role: req.body.role || "USER",
         content: req.body.content,
+        images: req.body.images ?? undefined,
         status: "COMPLETE"
       }
     });

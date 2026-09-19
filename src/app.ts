@@ -51,7 +51,8 @@ app.use(
     credentials: true
   })
 );
-app.use(express.json({ limit: "1mb" }));
+// 10mb: allow inline base64 vision images (up to 3x ~7MB strings, total capped here).
+app.use(express.json({ limit: "10mb" }));
 app.use(cookieParser());
 app.use(csrfProtect);
 

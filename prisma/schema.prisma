@@ -78,6 +78,7 @@ model Message {
   conversationId String
   role           String
   content        String
+  images         Json?
   createdAt      DateTime      @default(now())
   tokenCount     Int?
   promptTokens   Int?
