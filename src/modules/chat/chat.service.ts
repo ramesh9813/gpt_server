@@ -73,12 +73,13 @@ export const redactForLog = (messages: OpenRouterMessage[]) =>
     };
   });
 
-const cleanQuestion = (v: string): string =>
-  v
-    .trim()
-    .replace(/^([\-\*\d]+\)?[.)\]\s:–-]+\s*/, "")
-    .replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, "")
-    .trim();
+const cleanQuestion = (v: string): string => {
+  const bullets = String.raw`[-*\d.\s:;)\]]`;
+  const quotes = "\u201c\u201d\u2018\u2019";
+  const leading = new RegExp(`^${bullets}+`);
+  const wrapping = new RegExp(`^[\"'${quotes}\`*]+|[\"'${quotes}\`*]+$`, "g");
+  return v.trim().replace(leading, "").replace(wrapping, "").trim();
+};
 
 const parseFollowups = (text: string): string[] => {
   const cleaned = (text || "")
