@@ -1,9 +1,18 @@
-// Image + video generation turns — split from chat.service.ts. No logic changes.
+// Image + video generation turns — split from chat.service.ts. No logic changes
+// except budgeted history (image) and compact prompt context (video).
 import { prisma } from "../../lib/prisma";
 import { env } from "../../lib/config";
 import { listOpenRouterModels, supportsImageGeneration, supportsVideoGeneration } from "../../lib/openrouter";
 import { sseHead, sseSend, sseEnd, finishTextReply } from "./sse";
 import { generateFollowups } from "./followups";
+import { buildHistoryMessages } from "./history";
+
+// Local to avoid a chat.service <-> mediaReply import cycle.
+const toUserContent = (text: string, images?: string[]): string | Array<{ type: string; text?: string; image_url?: { url: string } }> => {
+  if (!images || images.length === 0) return text;
+  const safe = text && text.trim().length > 0 ? text : "Generate an image for this request.";
+  return [{ type: "text", text: safe }, ...images.map((url) => ({ type: "image_url", image_url: { url } }))];
+};
 
 // Image-generation turn: uses the selected model when it can emit images,
 // otherwise answers with a plain-text capability notice. Images are saved
@@ -11,7 +20,7 @@ import { generateFollowups } from "./followups";
 export const sendImageReply = async (
   req: any,
   res: any,
-  opts: { assistantMessageId: string; conversationId: string; prompt: string; selectedModel: string }
+  opts: { assistantMessageId: string; conversationId: string; prompt: string; selectedModel: string; history?: unknown; images?: string[] }
 ) => {
   const { assistantMessageId, conversationId, prompt, selectedModel } = opts;
   sseHead(res);
@@ -27,6 +36,33 @@ export const sendImageReply = async (
         `This model (\`${selectedModel}\`) has no image-generation capability, so I can't create pictures with it. Switch to an image-capable model (for example a gpt-image or Gemini image model) and ask again.`
       );
     }
+    // Budgeted history: compact prior turns, current prompt (with current-turn
+    // images) last. History comes from routes when available, else refetched.
+    let historyMessages: Array<{ role: "user" | "assistant" | "system"; content: any }> | null = null;
+    try {
+      let rows: unknown = (opts as { history?: unknown }).history;
+      if (!Array.isArray(rows)) {
+        rows = await prisma.message.findMany({ where: { conversationId }, orderBy: { createdAt: "asc" } });
+      }
+      const arr = Array.isArray(rows) ? (rows as unknown[]) : [];
+      let base = arr;
+      if (arr.length > 0) {
+        const last = arr[arr.length - 1] as { role?: unknown; content?: unknown };
+        if (last?.role === "USER" && typeof last?.content === "string" && last.content === prompt) {
+          base = arr.slice(0, -1);
+        }
+      }
+      const built = buildHistoryMessages(base, {});
+      const rawImgs = (opts as { images?: unknown }).images;
+      const currentImages = Array.isArray(rawImgs)
+        ? rawImgs.filter((v): v is string => typeof v === "string" && v.startsWith("data:image/"))
+        : [];
+      const currentContent = toUserContent(prompt, currentImages);
+      historyMessages = [...(built.messages as any), { role: "user" as const, content: currentContent as any }];
+    } catch {
+      historyMessages = null;
+    }
+    const messages = historyMessages && historyMessages.length > 0 ? historyMessages : [{ role: "user" as const, content: prompt }];
     let urls: string[] = [];
     let caption = "";
 
@@ -41,7 +77,7 @@ export const sendImageReply = async (
         },
         body: JSON.stringify({
           model: selectedModel,
-          messages: [{ role: "user", content: prompt }],
+          messages,
           modalities: ["image", "text"],
         }),
         signal: AbortSignal.timeout(90000),
@@ -142,10 +178,30 @@ const providerReason = (body: string): string => {
   return text ? text.slice(0, 200) : "";
 };
 
+const buildVideoPrompt = async (conversationId: string, prompt: string, history?: unknown): Promise<string> => {
+  try {
+    let rows: unknown = history;
+    if (!Array.isArray(rows)) {
+      rows = await prisma.message.findMany({ where: { conversationId }, orderBy: { createdAt: "asc" } });
+    }
+    if (!Array.isArray(rows)) return prompt;
+    let texts = (rows as Array<{ role?: unknown; content?: unknown }>)
+      .filter((r) => r?.role === "USER")
+      .map((r) => String(r?.content ?? "").trim())
+      .filter((s) => s.length > 0);
+    if (texts.length > 0 && texts[texts.length - 1] === prompt) texts = texts.slice(0, -1);
+    const ctx = texts.slice(-3).map((s) => s.slice(0, 300));
+    if (ctx.length === 0) return prompt;
+    return `Conversation so far:\n${ctx.map((c) => `- ${c}`).join("\n")}\n\n${prompt}`;
+  } catch {
+    return prompt;
+  }
+};
+
 export const sendVideoReply = async (
   req: any,
   res: any,
-  opts: { assistantMessageId: string; conversationId: string; prompt: string; selectedModel: string }
+  opts: { assistantMessageId: string; conversationId: string; prompt: string; selectedModel: string; history?: unknown }
 ) => {
   const { assistantMessageId, conversationId, prompt, selectedModel } = opts;
   sseHead(res);
@@ -161,6 +217,8 @@ export const sendVideoReply = async (
         `This model (\`${selectedModel}\`) has no video-generation capability, so I can't create videos with it. Switch to a video-capable model (for example a Veo video model) and ask again.`
       );
     }
+    // /videos takes a prompt string only — prepend compact recent user context.
+    const effectivePrompt = await buildVideoPrompt(conversationId, prompt, (opts as { history?: unknown }).history);
     const submit = await fetch(`${env.OPENROUTER_BASE_URL}/videos`, {
       method: "POST",
       headers: {
@@ -169,7 +227,7 @@ export const sendVideoReply = async (
         "HTTP-Referer": env.APP_ORIGIN,
         "X-Title": "ChatUI",
       },
-      body: JSON.stringify({ model: selectedModel, prompt }),
+      body: JSON.stringify({ model: selectedModel, prompt: effectivePrompt }),
       signal: AbortSignal.timeout(30000),
     });
     if (!submit.ok) {

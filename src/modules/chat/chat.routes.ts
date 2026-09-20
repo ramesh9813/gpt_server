@@ -5,9 +5,8 @@ import { validateBody } from "../../middleware/validate";
 import { resolveModelForRole, isImageOnlyModel, isVideoOnlyModel } from "../../lib/openrouter";
 import {
   ARTIFACT_SYSTEM_PROMPT,
-  buildUserContent,
   getStoredImages,
-  mapRole,
+  redactForLog,
   sendImageReply,
   sendMcqReply,
   sendSimpleTextFinish,
@@ -20,6 +19,7 @@ import {
   wantsVideo,
   type OpenRouterMessage,
 } from "./chat.service";
+import { buildHistoryMessages } from "./history";
 
 const router = Router();
 
@@ -150,7 +150,8 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       conversationId,
       prompt: userMsgContent,
       selectedModel,
-    });
+      history,
+    } as any);
   }
 
   // Image-generation turn: capability-checked, saved with images.
@@ -160,7 +161,9 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       conversationId,
       prompt: userMsgContent,
       selectedModel,
-    });
+      history,
+      images: userImages,
+    } as any);
   }
 
   // Artifact turn: explicit client flag OR keyword auto-detect, fresh turns only
@@ -169,30 +172,28 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   const isArtifactTurn =
     !existingUserMessageId && (artifact === true || wantsArtifact(userMsgContent));
 
-  const messages: OpenRouterMessage[] = [];
-  if (isArtifactTurn) {
-    // Artifact instructions first, then the user's custom system prompt if present.
-    const combined = systemPrompt
+  // Token-budgeted history (payload only — DB untouched). Rebuilt from DB every
+  // turn so memory survives model switches; retry slices to existingUserMessageId.
+  const effectiveSystemPrompt = isArtifactTurn
+    ? systemPrompt
       ? `${ARTIFACT_SYSTEM_PROMPT}\n\nAdditional instructions:\n${systemPrompt}`
-      : ARTIFACT_SYSTEM_PROMPT;
-    messages.push({ role: "system", content: combined });
-  } else if (systemPrompt) {
-    messages.push({ role: "system", content: systemPrompt });
-  }
-  for (const message of history) {
-    const role = mapRole(message.role);
-    if (role === "user") {
-      const stored = getStoredImages(message);
-      messages.push({ role, content: buildUserContent(message.content, stored) });
-    } else {
-      messages.push({ role, content: message.content });
-    }
-  }
+      : ARTIFACT_SYSTEM_PROMPT
+    : systemPrompt;
+  const { messages, stats } = buildHistoryMessages(history, {
+    systemPrompt: effectiveSystemPrompt,
+    existingUserMessageId,
+  });
+  console.log(
+    "Sending messages to OpenRouter:",
+    JSON.stringify(redactForLog(messages as OpenRouterMessage[]), null, 2),
+    "historyStats:",
+    JSON.stringify(stats),
+  );
 
   return streamOpenRouterCompletion(req, res, {
     assistantMessageId: assistantMsg.id,
     conversationId,
-    messages,
+    messages: messages as OpenRouterMessage[],
     selectedModel,
     research: research === true,
   });
