@@ -22,6 +22,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     images,
     model,
     systemPrompt,
+    research,
   }: {
     conversationId: string;
     userMessage?: string;
@@ -29,6 +30,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     images?: string[];
     model?: string;
     systemPrompt?: string;
+    research?: boolean;
   } = req.body;
 
   const conversation = await prisma.conversation.findFirst({
@@ -113,6 +115,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     conversationId,
     messages,
     selectedModel,
+    research: research === true,
   });
 });
 
