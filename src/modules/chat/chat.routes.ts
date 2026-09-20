@@ -1,426 +1,119 @@
 import { Router } from "express";
-import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
-import { env } from "../../lib/config";
 import { resolveModelForRole } from "../../lib/openrouter";
+import {
+  buildUserContent,
+  getStoredImages,
+  mapRole,
+  streamOpenRouterCompletion,
+  streamSchema,
+  type OpenRouterMessage,
+} from "./chat.service";
 
 const router = Router();
 
-// Vision: inline base64 dataURLs, no storage/S3. Keep small to fit 10mb JSON body.
-const MAX_IMAGES = 3;
-const MAX_IMAGE_STRING_LENGTH = 7 * 1024 * 1024; // ~7MB string each (~5MB binary + base64 overhead)
-const IMAGE_PREFIX_REGEX = /^data:image\/(jpeg|jpg|png|webp|gif);base64,/;
+router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res) => {
+  const {
+    conversationId,
+    userMessage,
+    existingUserMessageId,
+    images,
+    model,
+    systemPrompt,
+  }: {
+    conversationId: string;
+    userMessage?: string;
+    existingUserMessageId?: string;
+    images?: string[];
+    model?: string;
+    systemPrompt?: string;
+  } = req.body;
 
-const imageDataUrlSchema = z
-  .string()
-  .max(MAX_IMAGE_STRING_LENGTH, "Each image must be under ~7MB")
-  .refine((v) => IMAGE_PREFIX_REGEX.test(v.slice(0, 50)), {
-    message: "images must be dataURL jpeg/png/webp/gif base64"
-  })
-  .refine((v) => v.length > 30, {
-    message: "images must contain base64 payload"
+  const conversation = await prisma.conversation.findFirst({
+    where: { id: conversationId, userId: req.user!.id, deletedAt: null },
   });
-
-const streamSchema = z
-  .object({
-    conversationId: z.string(),
-    userMessage: z.string().min(1).max(8000).optional(),
-    existingUserMessageId: z.string().optional(),
-    images: z.array(imageDataUrlSchema).max(MAX_IMAGES).optional(),
-    model: z.string().optional(),
-    systemPrompt: z.string().optional()
-  })
-  .refine(
-    (data) =>
-      data.userMessage ||
-      data.existingUserMessageId ||
-      (data.images && data.images.length > 0),
-    {
-      message: "userMessage or existingUserMessageId or images is required"
-    }
-  )
-  .refine((data) => !(data.userMessage && data.existingUserMessageId), {
-    message: "Provide either userMessage or existingUserMessageId"
-  });
-
-type OpenRouterTextPart = {
-  type: "text";
-  text: string;
-};
-
-type OpenRouterImagePart = {
-  type: "image_url";
-  image_url: { url: string };
-};
-
-type OpenRouterContent = string | Array<OpenRouterTextPart | OpenRouterImagePart>;
-
-type OpenRouterMessage = {
-  role: "system" | "user" | "assistant";
-  content: OpenRouterContent;
-};
-
-const mapRole = (role: string): OpenRouterMessage["role"] => {
-  if (role === "SYSTEM") return "system";
-  if (role === "ASSISTANT") return "assistant";
-  return "user";
-};
-
-const buildUserContent = (text: string, images?: string[]): OpenRouterContent => {
-  if (!images || images.length === 0) return text;
-  const safeText =
-    text && text.trim().length > 0
-      ? text
-      : "Describe the attached image(s) in detail.";
-  return [
-    { type: "text", text: safeText },
-    ...images.map((url) => ({
-      type: "image_url" as const,
-      image_url: { url }
-    }))
-  ];
-};
-
-const getStoredImages = (msg: unknown): string[] => {
-  const raw = (msg as { images?: unknown }).images;
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(
-    (v): v is string => typeof v === "string" && v.startsWith("data:image/")
-  );
-};
-
-// Avoid dumping multi-MB base64 into logs.
-const redactForLog = (messages: OpenRouterMessage[]) =>
-  messages.map((m) => {
-    if (typeof m.content === "string") return m;
-    return {
-      ...m,
-      content: (m.content as Array<OpenRouterTextPart | OpenRouterImagePart>).map(
-        (p) =>
-          p.type === "image_url"
-            ? {
-                type: p.type,
-                image_url: { url: `[omitted dataURL length=${p.image_url.url.length}]` }
-              }
-            : p
-      )
-    };
-  });
-
-router.post(
-  "/stream",
-  requireAuth,
-  validateBody(streamSchema),
-  async (req, res) => {
-    const {
-      conversationId,
-      userMessage,
-      existingUserMessageId,
-      images,
-      model,
-      systemPrompt
-    }: {
-      conversationId: string;
-      userMessage?: string;
-      existingUserMessageId?: string;
-      images?: string[];
-      model?: string;
-      systemPrompt?: string;
-    } = req.body;
-
-    const conversation = await prisma.conversation.findFirst({
-      where: {
-        id: conversationId,
-        userId: req.user!.id,
-        deletedAt: null
-      }
+  if (!conversation) {
+    return res.status(404).json({
+      success: false,
+      error: { code: "NOT_FOUND", message: "Conversation not found" },
     });
+  }
 
-    if (!conversation) {
+  const resolvedModel = await resolveModelForRole(req.user!.role, model);
+  if (!resolvedModel.ok) {
+    return res.status(resolvedModel.status).json({
+      success: false,
+      error: { code: resolvedModel.code, message: resolvedModel.message },
+    });
+  }
+  const selectedModel = resolvedModel.model;
+
+  let userMsgContent = userMessage || "";
+  let userImages: string[] = Array.isArray(images) ? images : [];
+  if (existingUserMessageId) {
+    const existingMessage = await prisma.message.findFirst({
+      where: { id: existingUserMessageId, conversationId, role: "USER" },
+    });
+    if (!existingMessage) {
       return res.status(404).json({
         success: false,
-        error: { code: "NOT_FOUND", message: "Conversation not found" }
+        error: { code: "NOT_FOUND", message: "Message not found" },
       });
     }
-
-    const resolvedModel = await resolveModelForRole(req.user!.role, model);
-    if (!resolvedModel.ok) {
-      return res.status(resolvedModel.status).json({
-        success: false,
-        error: {
-          code: resolvedModel.code,
-          message: resolvedModel.message
-        }
-      });
-    }
-    const selectedModel = resolvedModel.model;
-
-    let userMsgContent = userMessage || "";
-    let userImages: string[] = Array.isArray(images) ? images : [];
-    if (existingUserMessageId) {
-      const existingMessage = await prisma.message.findFirst({
-        where: {
-          id: existingUserMessageId,
-          conversationId,
-          role: "USER"
-        }
-      });
-
-      if (!existingMessage) {
-        return res.status(404).json({
-          success: false,
-          error: { code: "NOT_FOUND", message: "Message not found" }
-        });
-      }
-
-      userMsgContent = existingMessage.content;
-      // Retry path: re-hydrate images from DB so client doesn't resend base64.
-      // Request images (if any) are ignored when existingUserMessageId is set.
-      userImages = getStoredImages(existingMessage);
-    } else if (userMessage || userImages.length > 0) {
-      await prisma.message.create({
-        data: {
-          conversationId,
-          role: "USER",
-          content: userMessage ?? "",
-          images: userImages.length > 0 ? userImages : undefined,
-          status: "COMPLETE"
-        }
-      });
-      userMsgContent = userMessage ?? "";
-    }
-
-    const trimmedTitle = userMsgContent.trim().replace(/\s+/g, " ");
-    if (conversation.title === "New chat" && trimmedTitle.length > 0) {
-      const derivedTitle =
-        trimmedTitle.length > 60
-          ? `${trimmedTitle.slice(0, 57)}...`
-          : trimmedTitle;
-      await prisma.conversation.update({
-        where: { id: conversationId },
-        data: { title: derivedTitle }
-      });
-    }
-
-    const history = await prisma.message.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: "asc" }
-    });
-
-    const assistantMsg = await prisma.message.create({
+    userMsgContent = existingMessage.content;
+    // Retry path: re-hydrate images from DB so client doesn't resend base64.
+    // Request images (if any) are ignored when existingUserMessageId is set.
+    userImages = getStoredImages(existingMessage);
+  } else if (userMessage || userImages.length > 0) {
+    await prisma.message.create({
       data: {
         conversationId,
-        role: "ASSISTANT",
-        content: "",
-        status: "STREAMING"
-      }
+        role: "USER",
+        content: userMessage ?? "",
+        images: userImages.length > 0 ? userImages : undefined,
+        status: "COMPLETE",
+      },
     });
+    userMsgContent = userMessage ?? "";
+  }
 
-    const messages: OpenRouterMessage[] = [];
-    if (systemPrompt) {
-      messages.push({ role: "system", content: systemPrompt });
-    }
+  const trimmedTitle = userMsgContent.trim().replace(/\s+/g, " ");
+  if (conversation.title === "New chat" && trimmedTitle.length > 0) {
+    const derivedTitle = trimmedTitle.length > 60 ? `${trimmedTitle.slice(0, 57)}...` : trimmedTitle;
+    await prisma.conversation.update({ where: { id: conversationId }, data: { title: derivedTitle } });
+  }
 
-    for (const message of history) {
-      const role = mapRole(message.role);
-      if (role === "user") {
-        const stored = getStoredImages(message);
-        messages.push({ role, content: buildUserContent(message.content, stored) });
-      } else {
-        messages.push({ role, content: message.content });
-      }
-    }
+  const history = await prisma.message.findMany({
+    where: { conversationId },
+    orderBy: { createdAt: "asc" },
+  });
 
-    if (!env.OPENROUTER_API_KEY) {
-      await prisma.message.update({
-        where: { id: assistantMsg.id },
-        data: {
-          status: "ERROR",
-          error: "OPENROUTER_API_KEY is not configured on the server."
-        }
-      });
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive"
-      });
-      res.write(`event: error\n`);
-      res.write(
-        `data: ${JSON.stringify({
-          code: "CONFIG_ERROR",
-          message:
-            "OPENROUTER_API_KEY is not configured on the server. Please set it in your Render environment variables."
-        })}\n\n`
-      );
-      return res.end();
-    }
+  const assistantMsg = await prisma.message.create({
+    data: { conversationId, role: "ASSISTANT", content: "", status: "STREAMING" },
+  });
 
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive"
-    });
-
-    const sendEvent = (event: string, data: unknown) => {
-      if (res.writableEnded || res.destroyed) return;
-      res.write(`event: ${event}\n`);
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
-
-    const safeEnd = () => {
-      if (!res.writableEnded && !res.destroyed) {
-        res.end();
-      }
-    };
-
-    const controller = new AbortController();
-    req.on("close", () => controller.abort());
-
-    let assistantContent = "";
-    let lastPersistedLength = 0;
-    let lastPersistedAt = Date.now();
-
-    console.log(
-      "Sending messages to OpenRouter:",
-      JSON.stringify(redactForLog(messages), null, 2)
-    );
-
-    try {
-      const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": env.APP_ORIGIN,
-          "X-Title": "ChatUI"
-        },
-        body: JSON.stringify({
-          model: selectedModel,
-          messages,
-          stream: true
-        }),
-        signal: controller.signal
-      });
-
-      console.log("OpenRouter Response Status:", response.status, response.statusText);
-
-      if (!response.ok || !response.body) {
-        const errorText = await response.text();
-        console.error("OpenRouter Error:", errorText);
-        await prisma.message.update({
-          where: { id: assistantMsg.id },
-          data: { status: "ERROR", error: errorText }
-        });
-        sendEvent("error", {
-          code: "OPENROUTER_ERROR",
-          message: `OpenRouter error: ${errorText}`
-        });
-        return safeEnd();
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let done = false;
-      let usage: any = null;
-
-      while (!done) {
-        const { value, done: readerDone } = await reader.read();
-        if (readerDone) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data:")) continue;
-          const data = trimmed.replace(/^data:\s*/, "");
-          if (data === "[DONE]") {
-            done = true;
-            break;
-          }
-
-          try {
-            const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta?.content;
-            if (typeof delta === "string" && delta.length > 0) {
-              assistantContent += delta;
-              sendEvent("token", { delta });
-            }
-            if (parsed.usage) {
-              usage = parsed.usage;
-            }
-          } catch {
-            // ignore malformed chunks
-          }
-        }
-
-        const now = Date.now();
-        if (
-          assistantContent.length - lastPersistedLength >= 200 ||
-          now - lastPersistedAt > 1000
-        ) {
-          lastPersistedLength = assistantContent.length;
-          lastPersistedAt = now;
-          await prisma.message.update({
-            where: { id: assistantMsg.id },
-            data: { content: assistantContent }
-          });
-        }
-      }
-
-      await prisma.message.update({
-        where: { id: assistantMsg.id },
-        data: {
-          content: assistantContent,
-          status: "COMPLETE",
-          model: selectedModel,
-          promptTokens: usage?.prompt_tokens,
-          completionTokens: usage?.completion_tokens,
-          tokenCount: usage?.total_tokens
-        }
-      });
-
-      await prisma.conversation.update({
-        where: { id: conversationId },
-        data: { updatedAt: new Date() }
-      });
-
-      sendEvent("done", { messageId: assistantMsg.id, usage: usage || {} });
-      return safeEnd();
-    } catch (err: any) {
-      if (controller.signal.aborted) {
-        await prisma.message.update({
-          where: { id: assistantMsg.id },
-          data: {
-            content: assistantContent,
-            status: "COMPLETE",
-            model: selectedModel
-          }
-        });
-        await prisma.conversation.update({
-          where: { id: conversationId },
-          data: { updatedAt: new Date() }
-        });
-        return safeEnd();
-      }
-      console.error("Stream error:", err);
-      await prisma.message.update({
-        where: { id: assistantMsg.id },
-        data: { status: "ERROR", error: err?.message || "Stream error" }
-      });
-      sendEvent("error", {
-        code: "STREAM_ERROR",
-        message: "Streaming failed"
-      });
-      return safeEnd();
+  const messages: OpenRouterMessage[] = [];
+  if (systemPrompt) {
+    messages.push({ role: "system", content: systemPrompt });
+  }
+  for (const message of history) {
+    const role = mapRole(message.role);
+    if (role === "user") {
+      const stored = getStoredImages(message);
+      messages.push({ role, content: buildUserContent(message.content, stored) });
+    } else {
+      messages.push({ role, content: message.content });
     }
   }
-);
+
+  return streamOpenRouterCompletion(req, res, {
+    assistantMessageId: assistantMsg.id,
+    conversationId,
+    messages,
+    selectedModel,
+  });
+});
 
 export default router;
