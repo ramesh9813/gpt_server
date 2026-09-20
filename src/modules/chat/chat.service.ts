@@ -73,29 +73,54 @@ export const redactForLog = (messages: OpenRouterMessage[]) =>
     };
   });
 
+const cleanQuestion = (v: string): string =>
+  v
+    .trim()
+    .replace(/^([\-\*\d]+\)?[.)\]\s:–-]+\s*/, "")
+    .replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, "")
+    .trim();
+
 const parseFollowups = (text: string): string[] => {
-  const cleaned = (text || "").trim();
+  const cleaned = (text || "")
+    .trim()
+    // strip markdown fences some models wrap around the JSON
+    .replace(/^```[a-zA-Z]*\s*/, "")
+    .replace(/\s*```$/, "")
+    .trim();
   if (!cleaned) return [];
   const candidates: unknown[] = [];
-  try {
-    const parsed: unknown = JSON.parse(cleaned);
-    if (Array.isArray(parsed)) candidates.push(...parsed);
-  } catch {
-    const match = cleaned.match(/\[[\s\S]*\]/);
-    if (match) {
-      try {
-        const parsed: unknown = JSON.parse(match[0]);
-        if (Array.isArray(parsed)) candidates.push(...parsed);
-      } catch {
-        // fall through to empty
-      }
+  const tryParse = (raw: string) => {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) candidates.push(...parsed);
+      return true;
+    } catch {
+      return false;
     }
+  };
+  if (!tryParse(cleaned)) {
+    const match = cleaned.match(/\[[\s\S]*\]/);
+    if (match) tryParse(match[0]);
   }
-  return candidates
+  let questions = candidates
     .filter((v): v is string => typeof v === "string")
-    .map((v) => v.trim().replace(/^[\-\*\d.\)\s]+/, "").trim())
-    .filter((v) => v.length > 0 && v.length <= 140)
-    .slice(0, 3);
+    .map(cleanQuestion)
+    .filter((v) => v.length > 0 && v.length <= 140);
+  // Fallback for models that ignore the JSON instruction: one question per line.
+  if (questions.length === 0) {
+    questions = cleaned
+      .split(/\r?\n+/)
+      .map(cleanQuestion)
+      .filter((v) => v.length > 10 && v.length <= 140);
+  }
+  // Last resort: split long prose on sentence boundaries.
+  if (questions.length === 0 && cleaned.length > 20) {
+    questions = cleaned
+      .split(/(?<=[?!])\s+/)
+      .map(cleanQuestion)
+      .filter((v) => v.length > 10 && v.length <= 140);
+  }
+  return questions.slice(0, 3);
 };
 
 const generateFollowups = async (model: string, answer: string): Promise<string[]> => {
