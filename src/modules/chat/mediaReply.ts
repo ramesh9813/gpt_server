@@ -4,7 +4,6 @@ import { env } from "../../lib/config";
 import { listOpenRouterModels, supportsImageGeneration, supportsVideoGeneration } from "../../lib/openrouter";
 import { sseHead, sseSend, sseEnd, finishTextReply } from "./sse";
 import { generateFollowups } from "./followups";
-import { MAX_VIDEOS } from "./intents";
 
 // Image-generation turn: uses the selected model when it can emit images,
 // otherwise answers with a plain-text capability notice. Images are saved
@@ -130,6 +129,19 @@ export const sendImageReply = async (
 // Videos are saved on the assistant message (Message.videos) so they persist
 // + re-render. Veo-class models return hosted https: URLs; some models return
 // data:video/* dataURLs — both are accepted.
+const providerReason = (body: string): string => {
+  try {
+    const parsed = JSON.parse(body);
+    const msg: unknown =
+      parsed?.error?.message || parsed?.error || parsed?.message;
+    if (typeof msg === "string" && msg.trim()) return msg.trim().slice(0, 200);
+  } catch {
+    // fall through
+  }
+  const text = (body || "").trim();
+  return text ? text.slice(0, 200) : "";
+};
+
 export const sendVideoReply = async (
   req: any,
   res: any,
@@ -149,7 +161,7 @@ export const sendVideoReply = async (
         `This model (\`${selectedModel}\`) has no video-generation capability, so I can't create videos with it. Switch to a video-capable model (for example a Veo video model) and ask again.`
       );
     }
-    const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+    const submit = await fetch(`${env.OPENROUTER_BASE_URL}/videos`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
@@ -157,88 +169,100 @@ export const sendVideoReply = async (
         "HTTP-Referer": env.APP_ORIGIN,
         "X-Title": "ChatUI",
       },
-      body: JSON.stringify({
-        model: selectedModel,
-        messages: [{ role: "user", content: prompt }],
-        modalities: ["video", "text"],
-      }),
-      signal: AbortSignal.timeout(180000),
+      body: JSON.stringify({ model: selectedModel, prompt }),
+      signal: AbortSignal.timeout(30000),
     });
-    if (!response.ok) {
-      return finishText(`Video generation failed (${response.status}). Please try again.`);
+    if (!submit.ok) {
+      const body = await submit.text().catch(() => "");
+      console.error("Video submit error:", submit.status, body.slice(0, 500));
+      return finishText(
+        `Video generation failed (${submit.status}). ${providerReason(body) || "Please try again."}`
+      );
     }
-    const json = (await response.json()) as any;
-    const msg = json?.choices?.[0]?.message ?? {};
-    const isVideoUrl = (u: unknown): u is string =>
-      typeof u === "string" && (u.startsWith("data:video/") || u.startsWith("https:"));
-    // Free-text links only count when they look like hosted media, so plain
-    // article links in a caption can never become phantom video players.
-    const looksLikeMedia = (u: string): boolean =>
-      /\.(mp4|webm|mov|m4v|ogv)([?#]|$)/i.test(u) ||
-      /(video|clip|media|stream|vod|mp4|\.m3u8)/i.test(u);
-    const unwrapVideoEntry = (v: unknown): string | undefined => {
-      if (typeof v === "string") return v;
-      if (v && typeof v === "object") {
-        const obj = v as Record<string, unknown>;
-        const nested = obj["video_url"];
-        if (nested && typeof nested === "object" && typeof (nested as Record<string, unknown>)["url"] === "string") {
-          return (nested as Record<string, string>)["url"];
+    const job = (await submit.json()) as any;
+    const jobId: string | undefined = job?.id;
+    const pollingUrl: string | undefined =
+      job?.polling_url || (jobId ? `${env.OPENROUTER_BASE_URL}/videos/${jobId}` : undefined);
+    if (!jobId || !pollingUrl) {
+      return finishText("Video generation failed (no job returned). Please try again.");
+    }
+    sendEvent("token", { delta: "Generating your video — this usually takes a minute or two… " });
+    // Poll until completed. SSE comments keep the connection alive.
+    const startedAt = Date.now();
+    const DEADLINE_MS = 8 * 60 * 1000;
+    let videoBytes: ArrayBuffer | null = null;
+    let videoContentType = "video/mp4";
+    for (;;) {
+      if (res.writableEnded || res.destroyed) return undefined;
+      if (Date.now() - startedAt > DEADLINE_MS) {
+        return finishText("Video generation timed out. Please try again.");
+      }
+      await new Promise((r) => setTimeout(r, 5000));
+      if (res.writableEnded || res.destroyed) return undefined;
+      try {
+        res.write(": ping\n\n");
+      } catch {
+        return undefined;
+      }
+      let statusRes: Response;
+      try {
+        statusRes = await fetch(pollingUrl, {
+          headers: {
+            Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+            "HTTP-Referer": env.APP_ORIGIN,
+            "X-Title": "ChatUI",
+          },
+          signal: AbortSignal.timeout(30000),
+        });
+      } catch {
+        continue;
+      }
+      if (!statusRes.ok) continue;
+      const status = (await statusRes.json()) as any;
+      const state: string = status?.status ?? "";
+      if (state === "completed") {
+        const contentUrls: string[] = Array.isArray(status?.unsigned_urls)
+          ? (status.unsigned_urls as unknown[]).filter((u): u is string => typeof u === "string")
+          : [];
+        const downloadUrl =
+          contentUrls[0] ?? `${env.OPENROUTER_BASE_URL}/videos/${jobId}/content`;
+        try {
+          const dl = await fetch(downloadUrl, {
+            headers: {
+              Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+              "HTTP-Referer": env.APP_ORIGIN,
+              "X-Title": "ChatUI",
+            },
+            signal: AbortSignal.timeout(120000),
+          });
+          if (!dl.ok) {
+            return finishText(`Video generation failed (download ${dl.status}). Please try again.`);
+          }
+          videoContentType = dl.headers.get("content-type") || "video/mp4";
+          videoBytes = await dl.arrayBuffer();
+        } catch (err: any) {
+          return finishText("Video download failed. Please try again.");
         }
-        if (typeof obj["url"] === "string") return obj["url"] as string;
-        if (typeof obj["b64_json"] === "string") return `data:video/mp4;base64,${obj["b64_json"] as string}`;
+        break;
       }
-      return undefined;
-    };
-    const fromVideos: string[] = Array.isArray((msg as Record<string, unknown>)["videos"])
-      ? ((msg as Record<string, unknown>)["videos"] as unknown[])
-          .map(unwrapVideoEntry)
-          .filter(isVideoUrl)
-      : [];
-    const fromImages: string[] = Array.isArray((msg as Record<string, unknown>)["images"])
-      ? ((msg as Record<string, unknown>)["images"] as unknown[])
-          .map((im: unknown) => {
-            if (typeof im === "string") return im;
-            if (im && typeof im === "object") {
-              const obj = im as Record<string, unknown>;
-              const imageUrl = obj["image_url"];
-              if (imageUrl && typeof imageUrl === "object" && typeof (imageUrl as Record<string, unknown>)["url"] === "string") {
-                return (imageUrl as Record<string, string>)["url"];
-              }
-              return unwrapVideoEntry(im);
-            }
-            return undefined;
-          })
-          .filter(isVideoUrl)
-      : [];
-    const caption: string = typeof (msg as Record<string, unknown>)["content"] === "string" ? ((msg as Record<string, unknown>)["content"] as string) : "";
-    const fromMarkdown: string[] = [];
-    if (caption) {
-      const mdLink = /\[.*?\]\((https:[^\s)]+)\)/g;
-      let m: RegExpExecArray | null;
-      while ((m = mdLink.exec(caption)) !== null) {
-        if (isVideoUrl(m[1]) && looksLikeMedia(m[1])) fromMarkdown.push(m[1]);
+      if (state === "failed" || state === "cancelled" || state === "expired") {
+        const reason =
+          typeof status?.error === "string" && status.error
+            ? status.error.slice(0, 200)
+            : "Please try again.";
+        return finishText(`Video generation ${state}. ${reason}`);
       }
-      const bare = /(https:[^\s)"']+)/g;
-      while ((m = bare.exec(caption)) !== null) {
-        const cleaned = m[1].replace(/[.,;:!?]+$/, "");
-        if (isVideoUrl(cleaned) && looksLikeMedia(cleaned)) fromMarkdown.push(cleaned);
-      }
-      const dataLink = /(data:video\/[a-zA-Z0-9+.-]+;base64,[A-Za-z0-9+/=]+)/g;
-      while ((m = dataLink.exec(caption)) !== null) {
-        if (isVideoUrl(m[1])) fromMarkdown.push(m[1]);
-      }
+      // pending / in_progress → keep polling
     }
-    const seen = new Set<string>();
-    const urls: string[] = [];
-    for (const u of [...fromVideos, ...fromImages, ...fromMarkdown]) {
-      if (!u || seen.has(u)) continue;
-      seen.add(u);
-      urls.push(u);
-      if (urls.length >= MAX_VIDEOS) break;
+    if (!videoBytes || videoBytes.byteLength === 0) {
+      return finishText("Video generation failed (empty result). Please try again.");
     }
-    if (urls.length === 0) {
-      return finishText(caption || "The model did not return a video. Please try again.");
+    if (videoBytes.byteLength > 15 * 1024 * 1024) {
+      return finishText("The generated video was too large to save. Try a shorter prompt.");
     }
+    const dataUrl = `data:${videoContentType};base64,${Buffer.from(videoBytes).toString("base64")}`;
+    const urls: string[] = [dataUrl];
+    const caption = "";
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: { content: caption, videos: urls, status: "COMPLETE", model: selectedModel } as any,
