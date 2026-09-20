@@ -41,6 +41,7 @@ model UserSettings {
   accentColor String    @default("#74aa9c")
   fontScale   String    @default("DEFAULT")
   brand       String    @default("default")
+  pinHeader   Boolean   @default(false)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
