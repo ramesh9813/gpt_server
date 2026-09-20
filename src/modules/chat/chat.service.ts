@@ -26,6 +26,7 @@ export const streamSchema = z
     images: z.array(imageDataUrlSchema).max(MAX_IMAGES).optional(),
     model: z.string().optional(),
     systemPrompt: z.string().optional(),
+    research: z.boolean().optional(),
   })
   .refine((data) => data.userMessage || data.existingUserMessageId || (data.images && data.images.length > 0), {
     message: "userMessage or existingUserMessageId or images is required",
@@ -154,12 +155,21 @@ const generateFollowups = async (model: string, answer: string): Promise<string[
   return parseFollowups(text);
 };
 
+// Deep Research: dedicated research models (e.g. perplexity/sonar-deep-research,
+// openai/o3-deep-research) search and synthesize autonomously. This prompt asks
+// for a thorough, sourced report; max_tokens is raised since reports are long.
+export const RESEARCH_SYSTEM_PROMPT =
+  "You are a deep research analyst. Investigate the user's topic thoroughly using every source available to you. " +
+  "Produce a comprehensive, well-structured report with clear headings, key findings up front, detailed analysis, " +
+  "and a Sources section listing the URLs you relied on. Be factual, cite claims to sources, and note uncertainty " +
+  "where sources disagree.";
+
 export const streamOpenRouterCompletion = async (
   req: Request,
   res: Response,
-  opts: { assistantMessageId: string; conversationId: string; messages: OpenRouterMessage[]; selectedModel: string }
+  opts: { assistantMessageId: string; conversationId: string; messages: OpenRouterMessage[]; selectedModel: string; research?: boolean }
 ) => {
-  const { assistantMessageId, conversationId, messages, selectedModel } = opts;
+  const { assistantMessageId, conversationId, messages, selectedModel, research } = opts;
   if (!env.OPENROUTER_API_KEY) {
     await prisma.message.update({
       where: { id: assistantMessageId },
@@ -186,6 +196,17 @@ export const streamOpenRouterCompletion = async (
   let lastPersistedAt = Date.now();
   console.log("Sending messages to OpenRouter:", JSON.stringify(redactForLog(messages), null, 2));
   try {
+    const requestBody: Record<string, unknown> = {
+      model: selectedModel,
+      messages: research
+        ? [{ role: "system", content: RESEARCH_SYSTEM_PROMPT }, ...messages]
+        : messages,
+      stream: true,
+    };
+    if (research) {
+      // Research reports are long; raise the ceiling when in research mode.
+      requestBody.max_tokens = 8000;
+    }
     const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
@@ -194,7 +215,7 @@ export const streamOpenRouterCompletion = async (
         "HTTP-Referer": env.APP_ORIGIN,
         "X-Title": "ChatUI",
       },
-      body: JSON.stringify({ model: selectedModel, messages, stream: true }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
     console.log("OpenRouter Response Status:", response.status, response.statusText);
