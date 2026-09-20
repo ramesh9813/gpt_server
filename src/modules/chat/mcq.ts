@@ -20,8 +20,27 @@ const mcqQuestionSchema = z.object({
 });
 
 export const mcqSchema = z.object({
-  questions: z.array(mcqQuestionSchema).min(1).max(10),
+  questions: z.array(mcqQuestionSchema).min(1).max(50),
 });
+
+export const DEFAULT_MCQ_COUNT = 10;
+export const MAX_MCQ_COUNT = 50;
+
+// Explicit amount: leading number ("15 photosynthesis") or "<n> questions".
+// Anything else (e.g. "World War 2") is left untouched; default 10.
+export const parseMcqCount = (topic: string): { count: number; cleanTopic: string } => {
+  const leading = topic.match(/^\s*(\d{1,3})\b\s*/);
+  if (leading) {
+    const n = Math.min(MAX_MCQ_COUNT, Math.max(1, parseInt(leading[1], 10)));
+    return { count: n, cleanTopic: topic.replace(/^\s*\d{1,3}\b\s*/, "").trim() || topic.trim() };
+  }
+  const inline = topic.match(/\b(\d{1,3})\s+questions?\b/i);
+  if (inline) {
+    const n = Math.min(MAX_MCQ_COUNT, Math.max(1, parseInt(inline[1], 10)));
+    return { count: n, cleanTopic: topic.replace(/\b\d{1,3}\s+questions?\b/i, "").replace(/\s+/g, " ").trim() || topic.trim() };
+  }
+  return { count: DEFAULT_MCQ_COUNT, cleanTopic: topic };
+};
 
 export type McqQuestion = z.infer<typeof mcqQuestionSchema>;
 export type McqQuiz = { round: number; topic: string; questions: McqQuestion[] };
@@ -37,9 +56,9 @@ export type McqReplyOpts = {
 
 const MCQ_REPEAT_BYPASS = /repeat|shuffle|again/i;
 
-const buildMcqPrompt = (topic: string, exclusion: string[]): string => {
+const buildMcqPrompt = (topic: string, count: number, exclusion: string[]): string => {
   const base =
-    `Generate 10 multiple-choice quiz questions on the topic "${topic}". ` +
+    `Generate ${count} multiple-choice quiz questions on the topic "${topic}". ` +
     `Each question must have exactly 4 options with exactly one correct answer. ` +
     `Reply with ONLY JSON in the form {"questions":[{"question":"...","options":["...","...","...","..."],"answerIndex":0,"explanation":"..."}]}. ` +
     `Keep each question <=300 characters, each option <=200 characters, explanation <=300 characters and optional. ` +
@@ -106,7 +125,8 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
     const exclusion: string[] = bypassExclusion
       ? []
       : bankList.slice(0, 30).map((q) => q.slice(0, 120));
-    const prompt = buildMcqPrompt(cleanTopic, exclusion);
+    const { count, cleanTopic: countedTopic } = parseMcqCount(cleanTopic);
+    const prompt = buildMcqPrompt(countedTopic || cleanTopic, count, exclusion);
 
     const attemptOnce = async (): Promise<McqQuestion[] | null> => {
       try {
@@ -121,10 +141,10 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
           body: JSON.stringify({
             model: selectedModel,
             messages: [{ role: "user", content: prompt }],
-            max_tokens: 2000,
+            max_tokens: Math.min(8000, Math.max(2000, count * 250)),
             temperature: 0.3,
           }),
-          signal: AbortSignal.timeout(45000),
+          signal: AbortSignal.timeout(90000),
         });
         if (!response.ok) return null;
         const json = (await response.json()) as any;
@@ -157,13 +177,13 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       if (!bypassExclusion && bankSet.has(h)) continue;
       seen.add(h);
       deduped.push(q);
-      if (deduped.length >= 10) break;
+      if (deduped.length >= count) break;
     }
     if (deduped.length === 0) {
       return finishText(`Sorry, I couldn't generate fresh questions on "${cleanTopic}" right now. Please try again.`);
     }
 
-    const quiz: McqQuiz = { round, topic: cleanTopic, questions: deduped.slice(0, 10) };
+    const quiz: McqQuiz = { round, topic: cleanTopic, questions: deduped.slice(0, count) };
 
     await (prisma.message.update as any)({
       where: { id: assistantMessageId },
