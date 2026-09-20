@@ -71,6 +71,7 @@ model Conversation {
   updatedAt  DateTime  @updatedAt
   archivedAt DateTime?
   deletedAt  DateTime?
+  pinned     Boolean   @default(false)
 
   user     User      @relation(fields: [userId], references: [id])
   folder   Folder?   @relation(fields: [folderId], references: [id])

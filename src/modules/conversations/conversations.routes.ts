@@ -13,7 +13,8 @@ const createSchema = z.object({
 const updateSchema = z.object({
   title: z.string().min(1).max(80).optional(),
   folderId: z.string().optional().nullable(),
-  archived: z.boolean().optional()
+  archived: z.boolean().optional(),
+  pinned: z.boolean().optional()
 });
 
 router.get("/", requireAuth, async (req, res) => {
@@ -33,7 +34,7 @@ router.get("/", requireAuth, async (req, res) => {
           ? { contains: search, mode: "insensitive" }
           : undefined
       },
-      orderBy: { updatedAt: "desc" },
+      orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
       skip,
       take: limit
     }),
@@ -97,7 +98,7 @@ router.patch(
   requireAuth,
   validateBody(updateSchema),
   async (req, res) => {
-    const { title, archived, folderId } = req.body;
+    const { title, archived, folderId, pinned } = req.body;
     const conversation = await prisma.conversation.findFirst({
       where: {
         id: req.params.id,
@@ -118,6 +119,7 @@ router.patch(
       data: {
         title: title ?? conversation.title,
         folderId: folderId !== undefined ? folderId : conversation.folderId,
+        pinned: pinned ?? conversation.pinned,
         archivedAt: archived
           ? new Date()
           : archived === false
