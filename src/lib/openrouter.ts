@@ -20,6 +20,7 @@ export type OpenRouterModel = {
   expiration_date?: string | null;
   is_deprecated?: boolean;
   status?: string;
+  speed_rank?: number;
   pricing?: OpenRouterPricing;
   architecture?: {
     modality?: string;
@@ -171,15 +172,28 @@ export const listOpenRouterModels = async (force?: boolean) => {
     return cachedModels;
   }
 
-  let response = await fetch(`${env.OPENROUTER_BASE_URL}/models`, {
-    headers: buildHeaders(true)
-  });
+  let response = await fetch(
+    `${env.OPENROUTER_BASE_URL}/models?sort=throughput-high-to-low`,
+    {
+      headers: buildHeaders(true)
+    }
+  );
   let source: CatalogSource = "authed";
   if (response.status === 401 || response.status === 403) {
+    response = await fetch(
+      `${env.OPENROUTER_BASE_URL}/models?sort=throughput-high-to-low`,
+      {
+        headers: buildHeaders(false)
+      }
+    );
+    source = "fallback";
+  }
+
+  // Fallback to unparameterized models endpoint if sort param is not supported by proxy
+  if (!response.ok) {
     response = await fetch(`${env.OPENROUTER_BASE_URL}/models`, {
       headers: buildHeaders(false)
     });
-    source = "fallback";
   }
 
   if (!response.ok) {
@@ -200,7 +214,11 @@ export const listOpenRouterModels = async (force?: boolean) => {
         typeof model === "object" &&
         typeof (model as OpenRouterModel).id === "string"
     )
-    .filter((model) => !isDeprecatedModel(model));
+    .filter((model) => !isDeprecatedModel(model))
+    .map((model, index) => ({
+      ...model,
+      speed_rank: index,
+    }));
   cachedAt = now;
   lastSource = source;
   lastFetchedAt = new Date(now).toISOString();
