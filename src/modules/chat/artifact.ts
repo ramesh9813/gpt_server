@@ -122,7 +122,7 @@ export const buildArtifactPrompt = (brandId?: string | null, userPrompt?: string
     `Border-radius ${s.radius}. ` +
     `Define CSS variables for the light values and override them inside ` +
     `@media (prefers-color-scheme: dark) with the dark values, so the artifact supports BOTH light and dark mode. ` +
-    `Layout must be compact/minimal and fit within 75vh height; the root container must use max-height: 75vh with ` +
+    `Layout must be compact/minimal and fill the full card height; the root container must use height 100% with ` +
     `internal scroll if needed (overflow: auto on the content region, never page-level scroll). ` +
     `Use minimal content (no filler text): only the controls, canvas/SVG, legend, and live readouts the user asked for; ` +
     `no lorem ipsum, no extra sections, tight spacing and small headings. ` +
