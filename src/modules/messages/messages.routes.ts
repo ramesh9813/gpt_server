@@ -27,8 +27,13 @@ const createMessageSchema = z.object({
 });
 
 const updateMessageSchema = z.object({
-  content: z.string().min(1).max(8000),
+  content: z.string().min(1).max(8000).optional(),
+  // Quiz passthrough so clients can persist selections (e.g. chosen answers)
+  // on an ASSISTANT quiz message. Full replace of the quiz field server-side.
+  quiz: z.record(z.any()).optional(),
   pruneFollowing: z.boolean().optional()
+}).refine((data) => data.content !== undefined || data.quiz !== undefined, {
+  message: "content or quiz is required"
 });
 
 router.get("/:id/messages", requireAuth, async (req, res) => {
@@ -124,8 +129,7 @@ router.patch(
     const message = await prisma.message.findFirst({
       where: {
         id: messageId,
-        conversationId,
-        role: "USER"
+        conversationId
       }
     });
 
@@ -136,13 +140,34 @@ router.patch(
       });
     }
 
-    const updated = await prisma.message.update({
+    // Preserve existing behavior: content edits are USER-only. Quiz replace is
+    // allowed on any role (quiz messages are ASSISTANT) so clients can persist
+    // selections. Content edit on non-USER stays a 404 (as before, when the
+    // lookup itself was role-filtered).
+    const wantsContent = (req.body as { content?: unknown }).content !== undefined;
+    const wantsQuiz = (req.body as { quiz?: unknown }).quiz !== undefined;
+    if (wantsContent && message.role !== "USER") {
+      return res.status(404).json({
+        success: false,
+        error: { code: "NOT_FOUND", message: "Message not found" }
+      });
+    }
+
+    const data: Record<string, unknown> = {};
+    if (wantsContent) {
+      data.content = (req.body as { content: string }).content;
+    }
+    if (wantsQuiz) {
+      data.quiz = (req.body as { quiz: Record<string, unknown> }).quiz;
+    }
+
+    const updated = await (prisma.message.update as any)({
       where: { id: message.id },
-      data: { content: req.body.content }
+      data
     });
 
     let pruned = 0;
-    if (req.body.pruneFollowing) {
+    if ((req.body as { pruneFollowing?: boolean }).pruneFollowing) {
       const result = await prisma.message.deleteMany({
         where: {
           conversationId,

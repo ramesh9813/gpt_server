@@ -72,6 +72,7 @@ model Conversation {
   archivedAt DateTime?
   deletedAt  DateTime?
   pinned     Boolean   @default(false)
+  quizAsked  Json?
 
   user     User      @relation(fields: [userId], references: [id])
   folder   Folder?   @relation(fields: [folderId], references: [id])
@@ -95,6 +96,7 @@ model Message {
   status         String        @default("COMPLETE")
   error          String?
   followups      Json?
+  quiz           Json?
 
   conversation Conversation @relation(fields: [conversationId], references: [id])
 

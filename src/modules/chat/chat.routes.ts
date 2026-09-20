@@ -8,9 +8,12 @@ import {
   getStoredImages,
   mapRole,
   sendImageReply,
+  sendMcqReply,
+  sendSimpleTextFinish,
   streamOpenRouterCompletion,
   streamSchema,
   wantsImageGeneration,
+  wantsMcq,
   type OpenRouterMessage,
 } from "./chat.service";
 
@@ -97,6 +100,41 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   const assistantMsg = await prisma.message.create({
     data: { conversationId, role: "ASSISTANT", content: "", status: "STREAMING" },
   });
+
+  // MCQ quiz turn: `mcq <topic>` generates 10 MCQs as a quiz event (no stream).
+  // Must run BEFORE the image branch so `mcq ...` never triggers image intent.
+  if (!existingUserMessageId && wantsMcq(userMsgContent)) {
+    const topic = userMsgContent.replace(/^\s*mcq\b/i, "").trim();
+    if (!topic) {
+      return sendSimpleTextFinish(req, res, {
+        assistantMessageId: assistantMsg.id,
+        conversationId,
+        selectedModel,
+        text: "Tell me a topic for the quiz — e.g. `mcq solar system`.",
+      });
+    }
+    const rawAsked = (conversation as unknown as { quizAsked?: unknown }).quizAsked;
+    const askedBank: string[] = Array.isArray(rawAsked)
+      ? rawAsked.filter((v): v is string => typeof v === "string")
+      : [];
+    let quizCount = 0;
+    try {
+      quizCount = await (prisma.message as any).count({
+        where: { conversationId, NOT: { quiz: null } },
+      });
+    } catch {
+      quizCount = 0;
+    }
+    const round = (typeof quizCount === "number" ? quizCount : 0) + 1;
+    return sendMcqReply(req, res, {
+      assistantMessageId: assistantMsg.id,
+      conversationId,
+      topic,
+      selectedModel,
+      askedBank,
+      round,
+    });
+  }
 
   // Image-generation turn: capability-checked, saved with images.
   if (!existingUserMessageId && wantsImageGeneration(userMsgContent)) {
