@@ -40,6 +40,7 @@ model UserSettings {
   theme       String    @default("SYSTEM")
   accentColor String    @default("#74aa9c")
   fontScale   String    @default("DEFAULT")
+  brand       String    @default("default")
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 

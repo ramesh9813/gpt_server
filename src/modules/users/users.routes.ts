@@ -13,7 +13,10 @@ const settingsSchema = z.object({
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/, "accentColor must be a hex color")
     .optional(),
-  fontScale: z.enum(["SMALL", "DEFAULT", "LARGE"]).optional()
+  fontScale: z.enum(["SMALL", "DEFAULT", "LARGE"]).optional(),
+  brand: z
+    .enum(["default", "chatgpt", "claude", "gemini", "grok", "deepseek"])
+    .optional()
 });
 
 router.get("/", requireAuth, async (req, res) => {
