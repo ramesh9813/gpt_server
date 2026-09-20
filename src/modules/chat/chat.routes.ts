@@ -4,6 +4,7 @@ import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 import { resolveModelForRole, isImageOnlyModel, isVideoOnlyModel } from "../../lib/openrouter";
 import {
+  ARTIFACT_SYSTEM_PROMPT,
   buildUserContent,
   getStoredImages,
   mapRole,
@@ -13,6 +14,7 @@ import {
   sendVideoReply,
   streamOpenRouterCompletion,
   streamSchema,
+  wantsArtifact,
   wantsImageGeneration,
   wantsMcq,
   wantsVideo,
@@ -30,6 +32,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     model,
     systemPrompt,
     research,
+    artifact,
   }: {
     conversationId: string;
     userMessage?: string;
@@ -38,6 +41,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     model?: string;
     systemPrompt?: string;
     research?: boolean;
+    artifact?: boolean;
   } = req.body;
 
   const conversation = await prisma.conversation.findFirst({
@@ -159,8 +163,20 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     });
   }
 
+  // Artifact turn: explicit client flag OR keyword auto-detect, fresh turns only
+  // (skip on existingUserMessageId retry, mirroring image/mcq branches).
+  // Continues the NORMAL streaming path — no special events, no new SSE type.
+  const isArtifactTurn =
+    !existingUserMessageId && (artifact === true || wantsArtifact(userMsgContent));
+
   const messages: OpenRouterMessage[] = [];
-  if (systemPrompt) {
+  if (isArtifactTurn) {
+    // Artifact instructions first, then the user's custom system prompt if present.
+    const combined = systemPrompt
+      ? `${ARTIFACT_SYSTEM_PROMPT}\n\nAdditional instructions:\n${systemPrompt}`
+      : ARTIFACT_SYSTEM_PROMPT;
+    messages.push({ role: "system", content: combined });
+  } else if (systemPrompt) {
     messages.push({ role: "system", content: systemPrompt });
   }
   for (const message of history) {

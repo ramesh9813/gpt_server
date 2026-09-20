@@ -28,6 +28,7 @@ export const streamSchema = z
     model: z.string().optional(),
     systemPrompt: z.string().optional(),
     research: z.boolean().optional(),
+    artifact: z.boolean().optional(),
   })
   .refine((data) => data.userMessage || data.existingUserMessageId || (data.images && data.images.length > 0), {
     message: "userMessage or existingUserMessageId or images is required",
@@ -239,3 +240,4 @@ export { generateFollowups } from "./followups";
 export { sendMcqReply, mcqSchema, hashQuestion } from "./mcq";
 export type { McqReplyOpts } from "./mcq";
 export { sendImageReply, sendVideoReply } from "./mediaReply";
+export { wantsArtifact, ARTIFACT_SYSTEM_PROMPT, ARTIFACT_INTENT } from "./artifact";
