@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { env } from "../../lib/config";
+import { generateFollowups } from "./followups";
 
 // Vision: inline base64 dataURLs, no storage/S3. Keep small to fit 10mb JSON body.
 export const MAX_IMAGES = 3;

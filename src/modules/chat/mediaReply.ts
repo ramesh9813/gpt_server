@@ -4,6 +4,7 @@ import { env } from "../../lib/config";
 import { listOpenRouterModels, supportsImageGeneration, supportsVideoGeneration } from "../../lib/openrouter";
 import { sseHead, sseSend, sseEnd, finishTextReply } from "./sse";
 import { generateFollowups } from "./followups";
+import { MAX_VIDEOS } from "./intents";
 
 // Image-generation turn: uses the selected model when it can emit images,
 // otherwise answers with a plain-text capability notice. Images are saved
@@ -27,30 +28,77 @@ export const sendImageReply = async (
         `This model (\`${selectedModel}\`) has no image-generation capability, so I can't create pictures with it. Switch to an image-capable model (for example a gpt-image or Gemini image model) and ask again.`
       );
     }
-    const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": env.APP_ORIGIN,
-        "X-Title": "ChatUI",
-      },
-      body: JSON.stringify({
-        model: selectedModel,
-        messages: [{ role: "user", content: prompt }],
-        modalities: ["image", "text"],
-      }),
-      signal: AbortSignal.timeout(90000),
-    });
-    if (!response.ok) {
-      return finishText(`Image generation failed (${response.status}). Please try again.`);
+    let urls: string[] = [];
+    let caption = "";
+
+    try {
+      const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": env.APP_ORIGIN,
+          "X-Title": "ChatUI",
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          messages: [{ role: "user", content: prompt }],
+          modalities: ["image", "text"],
+        }),
+        signal: AbortSignal.timeout(90000),
+      });
+      if (response.ok) {
+        const json = (await response.json()) as any;
+        const msg = json?.choices?.[0]?.message ?? {};
+        urls = Array.isArray(msg.images)
+          ? msg.images
+              .map((im: any) => im?.image_url?.url || im?.url)
+              .filter(
+                (u: unknown): u is string =>
+                  typeof u === "string" &&
+                  (u.startsWith("data:image/") || u.startsWith("https://") || u.startsWith("http://"))
+              )
+          : [];
+        caption = typeof msg.content === "string" ? msg.content : "";
+      }
+    } catch {
+      // Fall through to dedicated images endpoint
     }
-    const json = (await response.json()) as any;
-    const msg = json?.choices?.[0]?.message ?? {};
-    const urls: string[] = Array.isArray(msg.images)
-      ? msg.images.map((im: any) => im?.image_url?.url).filter((u: unknown): u is string => typeof u === "string" && u.startsWith("data:image/"))
-      : [];
-    const caption: string = typeof msg.content === "string" ? msg.content : "";
+
+    if (urls.length === 0) {
+      try {
+        const imgRes = await fetch(`${env.OPENROUTER_BASE_URL}/images`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": env.APP_ORIGIN,
+            "X-Title": "ChatUI",
+          },
+          body: JSON.stringify({
+            model: selectedModel,
+            prompt,
+          }),
+          signal: AbortSignal.timeout(90000),
+        });
+        if (imgRes.ok) {
+          const imgJson = (await imgRes.json()) as any;
+          if (Array.isArray(imgJson?.data)) {
+            for (const item of imgJson.data) {
+              if (typeof item?.b64_json === "string") {
+                const mime = item.media_type || "image/png";
+                urls.push(`data:${mime};base64,${item.b64_json}`);
+              } else if (typeof item?.url === "string") {
+                urls.push(item.url);
+              }
+            }
+          }
+        }
+      } catch {
+        // Handled below if urls.length === 0
+      }
+    }
+
     if (urls.length === 0) {
       return finishText(caption || "The model did not return an image. Please try again.");
     }

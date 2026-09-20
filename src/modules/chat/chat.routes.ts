@@ -2,7 +2,7 @@ import { Router } from "express";
 import { prisma } from "../../lib/prisma";
 import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
-import { resolveModelForRole } from "../../lib/openrouter";
+import { resolveModelForRole, isImageOnlyModel, isVideoOnlyModel } from "../../lib/openrouter";
 import {
   buildUserContent,
   getStoredImages,
@@ -140,7 +140,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
 
   // Video-generation turn: capability-checked, saved with videos.
   // Must run BEFORE the image branch so `generate video ...` never triggers image intent.
-  if (!existingUserMessageId && wantsVideo(userMsgContent)) {
+  if (!existingUserMessageId && (wantsVideo(userMsgContent) || isVideoOnlyModel(selectedModel))) {
     return sendVideoReply(req, res, {
       assistantMessageId: assistantMsg.id,
       conversationId,
@@ -150,7 +150,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   }
 
   // Image-generation turn: capability-checked, saved with images.
-  if (!existingUserMessageId && wantsImageGeneration(userMsgContent)) {
+  if (!existingUserMessageId && (wantsImageGeneration(userMsgContent) || isImageOnlyModel(selectedModel))) {
     return sendImageReply(req, res, {
       assistantMessageId: assistantMsg.id,
       conversationId,

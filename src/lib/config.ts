@@ -36,7 +36,7 @@ export const env = envSchema.parse(normalizedEnv);
 
 export const ownerEmails: Set<string> = new Set(
   env.OWNER_EMAILS.split(",")
-    .map((e) => e.trim().toLowerCase())
+    .map((e: string) => e.trim().toLowerCase())
     .filter(Boolean)
 );
 

@@ -40,7 +40,21 @@ export const supportsImageGeneration = (
       ? (catalog ?? cachedModels).find((m) => m.id === modelOrId)
       : modelOrId;
   const out = entry?.architecture?.output_modalities;
-  return Array.isArray(out) && out.includes("image");
+  if (Array.isArray(out) && out.includes("image")) return true;
+  if (typeof modelOrId === "string") {
+    const s = modelOrId.toLowerCase();
+    if (
+      s.includes("imagine-image") ||
+      s.includes("-image") ||
+      s.includes("image-") ||
+      s.includes("flux") ||
+      s.includes("midjourney") ||
+      s.includes("dall-e")
+    ) {
+      return true;
+    }
+  }
+  return false;
 };
 
 export const supportsVideoGeneration = (
@@ -52,7 +66,64 @@ export const supportsVideoGeneration = (
       ? (catalog ?? cachedModels).find((m) => m.id === modelOrId)
       : modelOrId;
   const out = entry?.architecture?.output_modalities;
-  return Array.isArray(out) && out.includes("video");
+  if (Array.isArray(out) && out.includes("video")) return true;
+  if (typeof modelOrId === "string") {
+    const s = modelOrId.toLowerCase();
+    if (
+      s.includes("imagine-video") ||
+      s.includes("-video") ||
+      s.includes("video-") ||
+      s.includes("veo") ||
+      s.includes("sora") ||
+      s.includes("kling")
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+
+export const isImageOnlyModel = (
+  modelOrId: OpenRouterModel | string | undefined | null,
+  catalog?: OpenRouterModel[]
+): boolean => {
+  const entry =
+    typeof modelOrId === "string"
+      ? (catalog ?? cachedModels).find((m) => m.id === modelOrId)
+      : modelOrId;
+  const out = entry?.architecture?.output_modalities;
+  if (Array.isArray(out) && out.includes("image") && !out.includes("text")) return true;
+  if (typeof modelOrId === "string") {
+    const s = modelOrId.toLowerCase();
+    if (s.includes("imagine-image") || s.includes("flux") || s.includes("midjourney")) {
+      return true;
+    }
+  }
+  return false;
+};
+
+export const isVideoOnlyModel = (
+  modelOrId: OpenRouterModel | string | undefined | null,
+  catalog?: OpenRouterModel[]
+): boolean => {
+  const entry =
+    typeof modelOrId === "string"
+      ? (catalog ?? cachedModels).find((m) => m.id === modelOrId)
+      : modelOrId;
+  const out = entry?.architecture?.output_modalities;
+  if (Array.isArray(out) && out.includes("video") && !out.includes("text")) return true;
+  if (typeof modelOrId === "string") {
+    const s = modelOrId.toLowerCase();
+    if (
+      s.includes("imagine-video") ||
+      s.includes("kling") ||
+      s.includes("sora") ||
+      s.includes("veo")
+    ) {
+      return true;
+    }
+  }
+  return false;
 };
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -118,7 +189,7 @@ export const listOpenRouterModels = async (force?: boolean) => {
   }
 
   let response = await fetch(
-    `${env.OPENROUTER_BASE_URL}/models?sort=throughput-high-to-low`,
+    `${env.OPENROUTER_BASE_URL}/models?output_modalities=text,image,video,audio&sort=throughput-high-to-low`,
     {
       headers: buildHeaders(true)
     }
@@ -126,7 +197,7 @@ export const listOpenRouterModels = async (force?: boolean) => {
   let source: CatalogSource = "authed";
   if (response.status === 401 || response.status === 403) {
     response = await fetch(
-      `${env.OPENROUTER_BASE_URL}/models?sort=throughput-high-to-low`,
+      `${env.OPENROUTER_BASE_URL}/models?output_modalities=text,image,video,audio&sort=throughput-high-to-low`,
       {
         headers: buildHeaders(false)
       }
@@ -135,6 +206,15 @@ export const listOpenRouterModels = async (force?: boolean) => {
   }
 
   // Fallback to unparameterized models endpoint if sort param is not supported by proxy
+  if (!response.ok) {
+    response = await fetch(
+      `${env.OPENROUTER_BASE_URL}/models?output_modalities=text,image,video,audio`,
+      {
+        headers: buildHeaders(false)
+      }
+    );
+  }
+
   if (!response.ok) {
     response = await fetch(`${env.OPENROUTER_BASE_URL}/models`, {
       headers: buildHeaders(false)
@@ -159,8 +239,8 @@ export const listOpenRouterModels = async (force?: boolean) => {
         typeof model === "object" &&
         typeof (model as OpenRouterModel).id === "string"
     )
-    .filter((model) => !isDeprecatedModel(model))
-    .map((model, index) => ({
+    .filter((model: OpenRouterModel) => !isDeprecatedModel(model))
+    .map((model: OpenRouterModel, index: number) => ({
       ...model,
       speed_rank: index,
     }));
