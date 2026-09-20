@@ -9,10 +9,6 @@ const router = Router();
 
 const settingsSchema = z.object({
   theme: z.enum(["SYSTEM", "DARK", "LIGHT"]).optional(),
-  accentColor: z
-    .string()
-    .regex(/^#[0-9a-fA-F]{6}$/, "accentColor must be a hex color")
-    .optional(),
   fontScale: z.enum(["SMALL", "DEFAULT", "LARGE"]).optional(),
   brand: z
     .enum(["default", "chatgpt", "claude", "gemini", "grok", "deepseek"])
