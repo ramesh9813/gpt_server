@@ -15,6 +15,8 @@ export const ARTIFACT_SYSTEM_PROMPT =
   "Tailwind via CDN is allowed but the page must degrade gracefully offline (core layout and rendering must work without it). " +
   "Include real interactive features: controls such as sliders/buttons/inputs that drive live Canvas or SVG rendering, " +
   "plus a legend and live value readouts. " +
+  "Fixed layout order: the Canvas/SVG simulation is ALWAYS at the top and the control panel is ALWAYS " +
+  "docked at the bottom (controls in a bottom bar); never place controls above the canvas and never intermix them. " +
   "Keep prose outside the fence to at most one short intro line; " +
   "never split the code across multiple fences — exactly one ```html:artifact block.";
 
