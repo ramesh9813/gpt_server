@@ -3,8 +3,8 @@ import { prisma } from "../../lib/prisma";
 import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 import { resolveModelForRole, isImageOnlyModel, isVideoOnlyModel } from "../../lib/openrouter";
+import { buildArtifactPrompt } from "./artifact";
 import {
-  ARTIFACT_SYSTEM_PROMPT,
   getStoredImages,
   redactForLog,
   sendImageReply,
@@ -172,12 +172,26 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   const isArtifactTurn =
     !existingUserMessageId && (artifact === true || wantsArtifact(userMsgContent));
 
+  // Brand-aware artifact prompt: load the user's brand, fallback "default",
+  // tolerate missing row/column (older DBs without UserSettings.brand).
+  let artifactBrand = "default";
+  if (isArtifactTurn) {
+    try {
+      const settings = await prisma.userSettings.findUnique({
+        where: { userId: req.user!.id },
+        select: { brand: true },
+      });
+      const raw = (settings as { brand?: unknown } | null)?.brand;
+      if (typeof raw === "string" && raw.trim()) artifactBrand = raw.trim().toLowerCase();
+    } catch {
+      artifactBrand = "default";
+    }
+  }
+
   // Token-budgeted history (payload only — DB untouched). Rebuilt from DB every
   // turn so memory survives model switches; retry slices to existingUserMessageId.
   const effectiveSystemPrompt = isArtifactTurn
-    ? systemPrompt
-      ? `${ARTIFACT_SYSTEM_PROMPT}\n\nAdditional instructions:\n${systemPrompt}`
-      : ARTIFACT_SYSTEM_PROMPT
+    ? buildArtifactPrompt(artifactBrand, systemPrompt)
     : systemPrompt;
   const { messages, stats } = buildHistoryMessages(history, {
     systemPrompt: effectiveSystemPrompt,
