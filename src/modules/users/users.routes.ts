@@ -13,7 +13,8 @@ const settingsSchema = z.object({
   brand: z
     .enum(["default", "chatgpt", "claude", "gemini", "grok", "deepseek"])
     .optional(),
-  pinHeader: z.boolean().optional()
+  pinHeader: z.boolean().optional(),
+  model: z.string().min(1).max(200).optional()
 });
 
 router.get("/", requireAuth, async (req, res) => {
