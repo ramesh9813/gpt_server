@@ -57,7 +57,7 @@ const languageFileName = (language: string) => {
   }
 };
 
-const executeWithPiston = async (
+export const executeWithPiston = async (
   language: string,
   code: string
 ): Promise<ExecuteResult> => {

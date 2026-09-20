@@ -63,7 +63,7 @@ type WandboxResult = {
   signal?: string;
 };
 
-const executeWithWandbox = async (
+export const executeWithWandbox = async (
   language: string,
   code: string
 ): Promise<ExecuteResult> => {
