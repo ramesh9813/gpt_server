@@ -10,6 +10,23 @@ export type OpenRouterModel = {
   id: string;
   name?: string;
   pricing?: OpenRouterPricing;
+  architecture?: {
+    modality?: string;
+    input_modalities?: string[];
+    output_modalities?: string[];
+  };
+};
+
+export const supportsImageGeneration = (
+  modelOrId: OpenRouterModel | string | undefined | null,
+  catalog?: OpenRouterModel[]
+): boolean => {
+  const entry =
+    typeof modelOrId === "string"
+      ? (catalog ?? cachedModels).find((m) => m.id === modelOrId)
+      : modelOrId;
+  const out = entry?.architecture?.output_modalities;
+  return Array.isArray(out) && out.includes("image");
 };
 
 const CACHE_TTL_MS = 5 * 60 * 1000;

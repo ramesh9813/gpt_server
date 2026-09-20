@@ -7,8 +7,10 @@ import {
   buildUserContent,
   getStoredImages,
   mapRole,
+  sendImageReply,
   streamOpenRouterCompletion,
   streamSchema,
+  wantsImageGeneration,
   type OpenRouterMessage,
 } from "./chat.service";
 
@@ -95,6 +97,16 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   const assistantMsg = await prisma.message.create({
     data: { conversationId, role: "ASSISTANT", content: "", status: "STREAMING" },
   });
+
+  // Image-generation turn: capability-checked, saved with images.
+  if (!existingUserMessageId && wantsImageGeneration(userMsgContent)) {
+    return sendImageReply(req, res, {
+      assistantMessageId: assistantMsg.id,
+      conversationId,
+      prompt: userMsgContent,
+      selectedModel,
+    });
+  }
 
   const messages: OpenRouterMessage[] = [];
   if (systemPrompt) {

@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { env } from "../../lib/config";
+import { listOpenRouterModels, supportsImageGeneration } from "../../lib/openrouter";
 
 // Vision: inline base64 dataURLs, no storage/S3. Keep small to fit 10mb JSON body.
 export const MAX_IMAGES = 3;
@@ -163,6 +164,102 @@ export const RESEARCH_SYSTEM_PROMPT =
   "Produce a comprehensive, well-structured report with clear headings, key findings up front, detailed analysis, " +
   "and a Sources section listing the URLs you relied on. Be factual, cite claims to sources, and note uncertainty " +
   "where sources disagree.";
+
+const IMAGE_INTENT = /\b(generat\w*|creat\w*|draw\w*|paint\w*|design\w*|render\w*|mak\w*|produc\w*)\b.{0,50}\b(image|picture|photo|artwork|logo|illustration|avatar|banner|drawing|painting|wallpaper|icon)\b|\b(image|picture|photo|logo)\s+of\b|\bdraw\s+me\b/i;
+
+export const wantsImageGeneration = (text: string): boolean =>
+  IMAGE_INTENT.test(text || "");
+
+const sseHead = (res: any) => {
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" });
+};
+const sseSend = (res: any) => (event: string, data: unknown) => {
+  if (res.writableEnded || res.destroyed) return;
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+};
+const sseEnd = (res: any) => () => {
+  if (!res.writableEnded && !res.destroyed) res.end();
+};
+
+// Image-generation turn: uses the selected model when it can emit images,
+// otherwise answers with a plain-text capability notice. Images are saved
+// on the assistant message (Message.images) so they persist + re-render.
+export const sendImageReply = async (
+  req: any,
+  res: any,
+  opts: { assistantMessageId: string; conversationId: string; prompt: string; selectedModel: string }
+) => {
+  const { assistantMessageId, conversationId, prompt, selectedModel } = opts;
+  sseHead(res);
+  const sendEvent = sseSend(res);
+  const safeEnd = sseEnd(res);
+  const finishText = async (text: string) => {
+    await prisma.message.update({
+      where: { id: assistantMessageId },
+      data: { content: text, status: "COMPLETE", model: selectedModel },
+    });
+    await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+    sendEvent("token", { delta: text });
+    sendEvent("done", { messageId: assistantMessageId, usage: {} });
+    return safeEnd();
+  };
+  try {
+    const catalog = await listOpenRouterModels().catch(() => []);
+    if (!supportsImageGeneration(selectedModel, catalog)) {
+      return finishText(
+        `This model (\`${selectedModel}\`) has no image-generation capability, so I can't create pictures with it. Switch to an image-capable model (for example a gpt-image or Gemini image model) and ask again.`
+      );
+    }
+    const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": env.APP_ORIGIN,
+        "X-Title": "ChatUI",
+      },
+      body: JSON.stringify({
+        model: selectedModel,
+        messages: [{ role: "user", content: prompt }],
+        modalities: ["image", "text"],
+      }),
+      signal: AbortSignal.timeout(90000),
+    });
+    if (!response.ok) {
+      return finishText(`Image generation failed (${response.status}). Please try again.`);
+    }
+    const json = (await response.json()) as any;
+    const msg = json?.choices?.[0]?.message ?? {};
+    const urls: string[] = Array.isArray(msg.images)
+      ? msg.images.map((im: any) => im?.image_url?.url).filter((u: unknown): u is string => typeof u === "string" && u.startsWith("data:image/"))
+      : [];
+    const caption: string = typeof msg.content === "string" ? msg.content : "";
+    if (urls.length === 0) {
+      return finishText(caption || "The model did not return an image. Please try again.");
+    }
+    await prisma.message.update({
+      where: { id: assistantMessageId },
+      data: { content: caption, images: urls, status: "COMPLETE", model: selectedModel },
+    });
+    await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+    sendEvent("images", { messageId: assistantMessageId, images: urls });
+    sendEvent("done", { messageId: assistantMessageId, usage: {} });
+    try {
+      const followups = await generateFollowups(selectedModel, `Generated image for: ${prompt}. ${caption}`);
+      if (followups.length > 0 && !res.writableEnded && !res.destroyed) {
+        await prisma.message.update({ where: { id: assistantMessageId }, data: { followups } });
+        sendEvent("followups", { messageId: assistantMessageId, followups });
+      }
+    } catch (err) {
+      console.error("Followups error:", (err as any)?.message || err);
+    }
+    return safeEnd();
+  } catch (err: any) {
+    console.error("Image reply error:", err?.message || err);
+    return finishText("Image generation failed. Please try again.");
+  }
+};
 
 export const streamOpenRouterCompletion = async (
   req: Request,
