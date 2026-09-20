@@ -25,7 +25,9 @@ const envSchema = z.object({
   OPENROUTER_MODEL_DEFAULT: z.string().default("openai/gpt-4o-mini"),
   OPENROUTER_MODEL_DEFAULT_FREE: z.string().optional(),
   APP_ORIGIN: z.string().default("http://localhost:5173"),
+  RUNNER_PROVIDER: z.enum(["piston", "wandbox"]).default("wandbox"),
   RUNNER_BASE_URL: z.string().default("https://emkc.org/api/v2/piston"),
+  WANDBOX_BASE_URL: z.string().default("https://wandbox.org"),
   RUNNER_TIMEOUT_MS: z.string().optional(),
   OWNER_EMAILS: z.string().default("rameshsingh9813@gmail.com")
 });
