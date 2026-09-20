@@ -9,7 +9,7 @@ const router = Router();
 
 const settingsSchema = z.object({
   theme: z.enum(["SYSTEM", "DARK", "LIGHT"]).optional(),
-  fontScale: z.enum(["SMALL", "DEFAULT", "LARGE"]).optional(),
+  fontScale: z.enum(["XSMALL", "SMALL", "DEFAULT", "LARGE", "XLARGE"]).optional(),
   brand: z
     .enum(["default", "chatgpt", "claude", "gemini", "grok", "deepseek"])
     .optional(),
