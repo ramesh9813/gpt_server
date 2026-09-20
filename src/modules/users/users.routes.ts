@@ -12,7 +12,8 @@ const settingsSchema = z.object({
   fontScale: z.enum(["SMALL", "DEFAULT", "LARGE"]).optional(),
   brand: z
     .enum(["default", "chatgpt", "claude", "gemini", "grok", "deepseek"])
-    .optional()
+    .optional(),
+  pinHeader: z.boolean().optional()
 });
 
 router.get("/", requireAuth, async (req, res) => {
