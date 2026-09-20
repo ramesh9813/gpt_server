@@ -52,7 +52,7 @@ const parseFollowups = (text: string): string[] => {
   return questions.slice(0, 3);
 };
 
-const generateFollowups = async (model: string, answer: string): Promise<string[]> => {
+export const generateFollowups = async (model: string, answer: string): Promise<string[]> => {
   const excerpt = (answer || "").trim().replace(/\s+/g, " ").slice(0, 2000);
   if (!excerpt) return [];
   const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
