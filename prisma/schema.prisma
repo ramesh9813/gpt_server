@@ -91,6 +91,7 @@ model Message {
   model          String?
   status         String        @default("COMPLETE")
   error          String?
+  followups      Json?
 
   conversation Conversation @relation(fields: [conversationId], references: [id])
 

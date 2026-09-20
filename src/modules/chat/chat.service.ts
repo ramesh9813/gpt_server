@@ -73,6 +73,61 @@ export const redactForLog = (messages: OpenRouterMessage[]) =>
     };
   });
 
+const parseFollowups = (text: string): string[] => {
+  const cleaned = (text || "").trim();
+  if (!cleaned) return [];
+  const candidates: unknown[] = [];
+  try {
+    const parsed: unknown = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) candidates.push(...parsed);
+  } catch {
+    const match = cleaned.match(/\[[\s\S]*\]/);
+    if (match) {
+      try {
+        const parsed: unknown = JSON.parse(match[0]);
+        if (Array.isArray(parsed)) candidates.push(...parsed);
+      } catch {
+        // fall through to empty
+      }
+    }
+  }
+  return candidates
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim().replace(/^[\-\*\d.\)\s]+/, "").trim())
+    .filter((v) => v.length > 0 && v.length <= 140)
+    .slice(0, 3);
+};
+
+const generateFollowups = async (model: string, answer: string): Promise<string[]> => {
+  const excerpt = (answer || "").trim().replace(/\s+/g, " ").slice(0, 2000);
+  if (!excerpt) return [];
+  const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": env.APP_ORIGIN,
+      "X-Title": "ChatUI",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: "user",
+          content: `Suggest 3 short follow-up questions a user might ask next about this answer. Reply with ONLY a JSON array of strings, no other text. Answer: ${excerpt}`,
+        },
+      ],
+      max_tokens: 150,
+      temperature: 0.7,
+    }),
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!response.ok) return [];
+  const json = (await response.json()) as any;
+  const text: string = json?.choices?.[0]?.message?.content ?? "";
+  return parseFollowups(text);
+};
+
 export const streamOpenRouterCompletion = async (
   req: Request,
   res: Response,
@@ -175,6 +230,19 @@ export const streamOpenRouterCompletion = async (
     });
     await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
     sendEvent("done", { messageId: assistantMessageId, usage: usage || {} });
+    // Best-effort follow-up questions (never fails the stream).
+    try {
+      const followups = await generateFollowups(selectedModel, assistantContent);
+      if (followups.length > 0 && !res.writableEnded && !res.destroyed) {
+        await prisma.message.update({
+          where: { id: assistantMessageId },
+          data: { followups },
+        });
+        sendEvent("followups", { messageId: assistantMessageId, followups });
+      }
+    } catch (err) {
+      console.error("Followups error:", (err as any)?.message || err);
+    }
     return safeEnd();
   } catch (err: any) {
     if (controller.signal.aborted) {
