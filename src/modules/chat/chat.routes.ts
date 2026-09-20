@@ -10,10 +10,12 @@ import {
   sendImageReply,
   sendMcqReply,
   sendSimpleTextFinish,
+  sendVideoReply,
   streamOpenRouterCompletion,
   streamSchema,
   wantsImageGeneration,
   wantsMcq,
+  wantsVideo,
   type OpenRouterMessage,
 } from "./chat.service";
 
@@ -133,6 +135,17 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       selectedModel,
       askedBank,
       round,
+    });
+  }
+
+  // Video-generation turn: capability-checked, saved with videos.
+  // Must run BEFORE the image branch so `generate video ...` never triggers image intent.
+  if (!existingUserMessageId && wantsVideo(userMsgContent)) {
+    return sendVideoReply(req, res, {
+      assistantMessageId: assistantMsg.id,
+      conversationId,
+      prompt: userMsgContent,
+      selectedModel,
     });
   }
 

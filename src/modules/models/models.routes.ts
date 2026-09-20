@@ -1,20 +1,43 @@
-import { Router } from "express";
-import { requireAuth } from "../../middleware/requireAuth";
-import { listOpenRouterModels } from "../../lib/openrouter";
+import { Router, Request } from "express";
+import { getCatalogMeta, listOpenRouterModels } from "../../lib/openrouter";
+import { verifyAccessToken } from "../../lib/auth";
+import { normalizeUserRole, UserRole } from "../../lib/userRoles";
 
 const router = Router();
 
-router.get("/", requireAuth, async (req, res) => {
+const resolveUserRole = (req: Request): UserRole => {
+  if (req.user?.role) return req.user.role;
+  const authHeader = req.headers.authorization;
+  const bearerToken =
+    authHeader && authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : null;
+  const token = bearerToken || req.cookies?.accessToken;
+  if (!token) return "user";
   try {
-    // Show the full OpenRouter catalog to every role. Access control stays
-    // enforced at send time (resolveModelForRole in chat/stream returns
+    const payload = verifyAccessToken(token);
+    return normalizeUserRole(payload.role);
+  } catch {
+    return "user";
+  }
+};
+
+router.get("/", async (req, res) => {
+  try {
+    // ?refresh=1 bypasses the 5-min server cache (force refetch from OpenRouter).
+    const refresh =
+      req.query.refresh === "1" || req.query.refresh === "true";
+    // Show the full OpenRouter catalog to every role (deprecated models are filtered out).
+    // Access control stays enforced at send time (resolveModelForRole in chat/stream returns
     // 403 MODEL_NOT_ALLOWED for disallowed models).
-    const models = await listOpenRouterModels();
+    const models = await listOpenRouterModels(refresh);
+    const { source, fetchedAt } = getCatalogMeta();
+    const role = resolveUserRole(req);
 
     return res.json({
       success: true,
       data: { models },
-      meta: { role: req.user!.role, total: models.length }
+      meta: { role, total: models.length, source, fetchedAt }
     });
   } catch (err: any) {
     return res.status(502).json({

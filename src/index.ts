@@ -3,6 +3,7 @@ import app from "./app";
 import { env } from "./lib/config";
 import { logger } from "./lib/logger";
 import { getDatabaseTarget, verifyDatabaseConnection } from "./lib/prisma";
+import { listOpenRouterModels } from "./lib/openrouter";
 
 const externalUrl = process.env.RENDER_EXTERNAL_URL || null;
 const isDev = process.env.NODE_ENV !== "production";
@@ -95,6 +96,11 @@ const startServer = async () => {
   // Attempt database connection with retries so waking/cold databases don't crash the server
   connectDatabaseWithRetry().catch((err) => {
     logger.error({ err }, "Error during database connection retry loop");
+  });
+
+  // Pre-load OpenRouter active model catalog so available models are ready immediately
+  listOpenRouterModels().catch((err) => {
+    logger.warn({ err }, "Initial OpenRouter model prefetch failed");
   });
 };
 

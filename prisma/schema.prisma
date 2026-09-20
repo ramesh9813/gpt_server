@@ -88,6 +88,7 @@ model Message {
   role           String
   content        String
   images         Json?
+  videos         Json?
   createdAt      DateTime      @default(now())
   tokenCount     Int?
   promptTokens   Int?
