@@ -125,7 +125,11 @@ export const buildArtifactPrompt = (brandId?: string | null, userPrompt?: string
     `Layout must be compact/minimal and fit within 75vh height; the root container must use max-height: 75vh with ` +
     `internal scroll if needed (overflow: auto on the content region, never page-level scroll). ` +
     `Use minimal content (no filler text): only the controls, canvas/SVG, legend, and live readouts the user asked for; ` +
-    `no lorem ipsum, no extra sections, tight spacing and small headings.`;
+    `no lorem ipsum, no extra sections, tight spacing and small headings. ` +
+    `Flat layout: do NOT render your own title/header block (the host card already shows the title), ` +
+    `do NOT wrap content in an outer card, border, or shadow container, and do NOT set a page-level background color ` +
+    `(use transparent so it blends seamlessly). ` +
+    `Content must fill the full width with 1rem inner padding; canvas/SVG elements use width 100%.`;
   return extra
     ? `${ARTIFACT_SYSTEM_PROMPT}${style}\n\nAdditional instructions:\n${extra}`
     : `${ARTIFACT_SYSTEM_PROMPT}${style}`;
