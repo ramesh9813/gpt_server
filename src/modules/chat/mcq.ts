@@ -45,6 +45,30 @@ export const parseMcqCount = (topic: string): { count: number; cleanTopic: strin
 export type McqQuestion = z.infer<typeof mcqQuestionSchema>;
 export type McqQuiz = { round: number; topic: string; questions: McqQuestion[] };
 
+/** Merge incoming questions into target: drops empties, intra-batch dupes
+ *  and bank dupes (normalized compare), capped at `count`. Mutates + returns
+ *  target. Exported for unit testing the exact-count enforcement. */
+export const mergeMcqQuestions = (
+  target: McqQuestion[],
+  incoming: McqQuestion[] | null,
+  count: number,
+  bankSet: Set<string>,
+  bypassExclusion: boolean,
+): McqQuestion[] => {
+  if (!incoming) return target;
+  const seen = new Set(target.map((q) => hashQuestion(q.question)));
+  for (const q of incoming) {
+    if (target.length >= count) break;
+    const h = hashQuestion(q.question);
+    if (!h) continue;
+    if (seen.has(h)) continue;
+    if (!bypassExclusion && bankSet.has(h)) continue;
+    seen.add(h);
+    target.push(q);
+  }
+  return target;
+};
+
 export type McqReplyOpts = {
   assistantMessageId: string;
   conversationId: string;
@@ -58,7 +82,8 @@ const MCQ_REPEAT_BYPASS = /repeat|shuffle|again/i;
 
 const buildMcqPrompt = (topic: string, count: number, exclusion: string[]): string => {
   const base =
-    `Generate ${count} multiple-choice quiz questions on the topic "${topic}". ` +
+    `Generate EXACTLY ${count} multiple-choice quiz questions on the topic "${topic}". ` +
+    `This is a strict requirement: your response must contain exactly ${count} questions — no more, no fewer. Count them before replying. ` +
     `Each question must have exactly 4 options with exactly one correct answer. ` +
     `Reply with ONLY JSON in the form {"questions":[{"question":"...","options":["...","...","...","..."],"answerIndex":0,"explanation":"..."}]}. ` +
     `Keep each question <=300 characters, each option <=200 characters, explanation <=300 characters and optional. ` +
@@ -126,9 +151,10 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       ? []
       : bankList.slice(0, 30).map((q) => q.slice(0, 120));
     const { count, cleanTopic: countedTopic } = parseMcqCount(cleanTopic);
-    const prompt = buildMcqPrompt(countedTopic || cleanTopic, count, exclusion);
+    const topicForPrompt = countedTopic || cleanTopic;
 
-    const attemptOnce = async (): Promise<McqQuestion[] | null> => {
+    const attemptOnce = async (askCount: number, askExclusion: string[]): Promise<McqQuestion[] | null> => {
+      const askPrompt = buildMcqPrompt(topicForPrompt, askCount, askExclusion);
       try {
         const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
           method: "POST",
@@ -140,8 +166,8 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
           },
           body: JSON.stringify({
             model: selectedModel,
-            messages: [{ role: "user", content: prompt }],
-            max_tokens: Math.min(8000, Math.max(2000, count * 250)),
+            messages: [{ role: "user", content: askPrompt }],
+            max_tokens: Math.min(8000, Math.max(2000, askCount * 250)),
             temperature: 0.3,
           }),
           signal: AbortSignal.timeout(90000),
@@ -155,29 +181,36 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       }
     };
 
-    let fetched: McqQuestion[] | null = await attemptOnce();
+    // Merge helper: dedupe model-returned dupes + bank dupes (normalize
+    // compare). Returns the merged list capped at `count`.
+    const bankSet = new Set(bankList.map(hashQuestion));
+    const mergeInto = (target: McqQuestion[], incoming: McqQuestion[] | null): McqQuestion[] =>
+      mergeMcqQuestions(target, incoming, count, bankSet, bypassExclusion);
+
+    let fetched: McqQuestion[] | null = await attemptOnce(count, exclusion);
     if (!fetched) {
       // Retry ONCE on invalid JSON / transient failure.
-      fetched = await attemptOnce();
+      fetched = await attemptOnce(count, exclusion);
     }
     if (!fetched || fetched.length === 0) {
       return finishText(`Sorry, I couldn't generate a quiz on "${cleanTopic}" right now. Please try again.`);
     }
 
-    // Filter model-returned dupes + bank dupes (normalize compare). When the
-    // topic asks for repeat/shuffle/again, bank exclusion is bypassed but
-    // intra-batch dupes are still removed. No second LLM call: accept fewer.
-    const bankSet = new Set(bankList.map(hashQuestion));
-    const seen = new Set<string>();
-    const deduped: McqQuestion[] = [];
-    for (const q of fetched) {
-      const h = hashQuestion(q.question);
-      if (!h) continue;
-      if (seen.has(h)) continue;
-      if (!bypassExclusion && bankSet.has(h)) continue;
-      seen.add(h);
-      deduped.push(q);
-      if (deduped.length >= count) break;
+    const deduped: McqQuestion[] = mergeInto([], fetched);
+
+    // Top-up loop: models often return fewer than asked, so explicitly
+    // request exactly the missing remainder (excluding what we already
+    // have) until the user's requested count is met.
+    let topUps = 0;
+    while (deduped.length < count && topUps < 2) {
+      topUps += 1;
+      const remaining = count - deduped.length;
+      const gotSoFar = deduped.map((q) => q.question.slice(0, 120));
+      const more = await attemptOnce(remaining, [...exclusion, ...gotSoFar]);
+      if (!more || more.length === 0) break;
+      const before = deduped.length;
+      mergeInto(deduped, more);
+      if (deduped.length === before) break; // no fresh questions — stop looping
     }
     if (deduped.length === 0) {
       return finishText(`Sorry, I couldn't generate fresh questions on "${cleanTopic}" right now. Please try again.`);
