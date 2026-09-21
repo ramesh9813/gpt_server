@@ -42,6 +42,8 @@ model UserSettings {
   fontScale   String    @default("DEFAULT")
   brand       String    @default("default")
   model       String    @default("default")
+  imageModel  String    @default("default")
+  videoModel  String    @default("default")
   pinHeader   Boolean   @default(false)
   appFontSize Int       @default(16)
   iconScale   Float     @default(1)

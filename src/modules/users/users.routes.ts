@@ -15,6 +15,8 @@ const settingsSchema = z.object({
     .optional(),
   pinHeader: z.boolean().optional(),
   model: z.string().min(1).max(200).optional(),
+  imageModel: z.string().min(1).max(200).optional(),
+  videoModel: z.string().min(1).max(200).optional(),
   appFontSize: z.number().int().min(12).max(22).optional(),
   iconScale: z.number().min(0.8).max(1.6).optional()
 });
@@ -65,11 +67,11 @@ router.patch(
         data: req.body
       });
     } catch (err: unknown) {
-      // Tolerate DBs not yet pushed with appFontSize/iconScale columns:
+      // Tolerate DBs not yet pushed with newer settings columns:
       // retry without the new fields instead of failing the whole save.
       const code = (err as { code?: string })?.code;
       if ((code === "P2022" || code === "P2003") && req.body && typeof req.body === "object") {
-        const { appFontSize: _a, iconScale: _i, ...rest } = req.body as Record<string, unknown>;
+        const { appFontSize: _a, iconScale: _i, imageModel: _m, videoModel: _v, ...rest } = req.body as Record<string, unknown>;
         settings = await prisma.userSettings.update({
           where: { userId: req.user!.id },
           data: rest
