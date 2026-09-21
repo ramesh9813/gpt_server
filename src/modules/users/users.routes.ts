@@ -14,7 +14,9 @@ const settingsSchema = z.object({
     .enum(["default", "chatgpt", "claude", "gemini", "grok", "deepseek"])
     .optional(),
   pinHeader: z.boolean().optional(),
-  model: z.string().min(1).max(200).optional()
+  model: z.string().min(1).max(200).optional(),
+  appFontSize: z.number().int().min(12).max(22).optional(),
+  iconScale: z.number().min(0.8).max(1.6).optional()
 });
 
 router.get("/", requireAuth, async (req, res) => {
@@ -56,10 +58,26 @@ router.patch(
   requireAuth,
   validateBody(settingsSchema),
   async (req, res) => {
-    const settings = await prisma.userSettings.update({
-      where: { userId: req.user!.id },
-      data: req.body
-    });
+    let settings;
+    try {
+      settings = await prisma.userSettings.update({
+        where: { userId: req.user!.id },
+        data: req.body
+      });
+    } catch (err: unknown) {
+      // Tolerate DBs not yet pushed with appFontSize/iconScale columns:
+      // retry without the new fields instead of failing the whole save.
+      const code = (err as { code?: string })?.code;
+      if ((code === "P2022" || code === "P2003") && req.body && typeof req.body === "object") {
+        const { appFontSize: _a, iconScale: _i, ...rest } = req.body as Record<string, unknown>;
+        settings = await prisma.userSettings.update({
+          where: { userId: req.user!.id },
+          data: rest
+        });
+      } else {
+        throw err;
+      }
+    }
 
     return res.json({
       success: true,

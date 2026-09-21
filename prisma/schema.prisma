@@ -43,6 +43,8 @@ model UserSettings {
   brand       String    @default("default")
   model       String    @default("default")
   pinHeader   Boolean   @default(false)
+  appFontSize Int       @default(16)
+  iconScale   Float     @default(1)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
