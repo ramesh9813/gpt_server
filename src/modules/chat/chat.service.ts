@@ -29,6 +29,7 @@ export const streamSchema = z
     systemPrompt: z.string().optional(),
     research: z.boolean().optional(),
     artifact: z.boolean().optional(),
+    webSearch: z.boolean().optional(),
   })
   .refine((data) => data.userMessage || data.existingUserMessageId || (data.images && data.images.length > 0), {
     message: "userMessage or existingUserMessageId or images is required",
@@ -86,12 +87,19 @@ export const RESEARCH_SYSTEM_PROMPT =
   "and a Sources section listing the URLs you relied on. Be factual, cite claims to sources, and note uncertainty " +
   "where sources disagree.";
 
+// Web search (OpenRouter server tool): the model searches live and cites
+// sources with markdown links. Opt-in per turn via `webSearch`; skipped when
+// deep-research mode is on (those models search autonomously and may reject
+// extra tools).
+export const WEB_SEARCH_SYSTEM_PROMPT =
+  "You have live web search. Synthesize answers from search results and cite sources with markdown links.";
+
 export const streamOpenRouterCompletion = async (
   req: Request,
   res: Response,
-  opts: { assistantMessageId: string; conversationId: string; messages: OpenRouterMessage[]; selectedModel: string; research?: boolean }
+  opts: { assistantMessageId: string; conversationId: string; messages: OpenRouterMessage[]; selectedModel: string; research?: boolean; webSearch?: boolean }
 ) => {
-  const { assistantMessageId, conversationId, messages, selectedModel, research } = opts;
+  const { assistantMessageId, conversationId, messages, selectedModel, research, webSearch } = opts;
   if (!env.OPENROUTER_API_KEY) {
     await prisma.message.update({
       where: { id: assistantMessageId },
@@ -118,11 +126,24 @@ export const streamOpenRouterCompletion = async (
   let lastPersistedAt = Date.now();
   console.log("Sending messages to OpenRouter:", JSON.stringify(redactForLog(messages), null, 2));
   try {
+    const useWebTool = webSearch === true && research !== true;
     const requestBody: Record<string, unknown> = {
       model: selectedModel,
       messages: research
         ? [{ role: "system", content: RESEARCH_SYSTEM_PROMPT }, ...messages]
-        : messages,
+        : useWebTool
+          ? [{ role: "system", content: WEB_SEARCH_SYSTEM_PROMPT }, ...messages]
+          : messages,
+      ...(useWebTool
+        ? {
+            tools: [
+              {
+                type: "openrouter:web_search",
+                parameters: { engine: "auto", max_results: 5 },
+              },
+            ],
+          }
+        : {}),
       stream: true,
     };
     if (research) {

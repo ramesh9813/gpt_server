@@ -33,6 +33,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     systemPrompt,
     research,
     artifact,
+    webSearch,
   }: {
     conversationId: string;
     userMessage?: string;
@@ -42,6 +43,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     systemPrompt?: string;
     research?: boolean;
     artifact?: boolean;
+    webSearch?: boolean;
   } = req.body;
 
   const conversation = await prisma.conversation.findFirst({
@@ -215,6 +217,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     messages: messages as OpenRouterMessage[],
     selectedModel,
     research: research === true,
+    webSearch: webSearch === true,
   });
 });
 
