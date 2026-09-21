@@ -109,7 +109,9 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
 
   // MCQ quiz turn: `mcq <topic>` generates 10 MCQs as a quiz event (no stream).
   // Must run BEFORE the image branch so `mcq ...` never triggers image intent.
-  if (!existingUserMessageId && wantsMcq(userMsgContent)) {
+  // Applies to fresh turns AND edit/regenerate retries so an edited mcq prompt
+  // stays a quiz instead of degrading to plain chat text.
+  if (wantsMcq(userMsgContent)) {
     const topic = userMsgContent.replace(/^\s*mcq\b/i, "").trim();
     if (!topic) {
       return sendSimpleTextFinish(req, res, {
@@ -144,7 +146,8 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
 
   // Video-generation turn: capability-checked, saved with videos.
   // Must run BEFORE the image branch so `generate video ...` never triggers image intent.
-  if (!existingUserMessageId && (wantsVideo(userMsgContent) || isVideoOnlyModel(selectedModel))) {
+  // Applies to retries too so an edited video prompt stays a video turn.
+  if (wantsVideo(userMsgContent) || isVideoOnlyModel(selectedModel)) {
     return sendVideoReply(req, res, {
       assistantMessageId: assistantMsg.id,
       conversationId,
@@ -155,7 +158,8 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   }
 
   // Image-generation turn: capability-checked, saved with images.
-  if (!existingUserMessageId && (wantsImageGeneration(userMsgContent) || isImageOnlyModel(selectedModel))) {
+  // Applies to retries too so an edited image prompt stays an image turn.
+  if (wantsImageGeneration(userMsgContent) || isImageOnlyModel(selectedModel)) {
     return sendImageReply(req, res, {
       assistantMessageId: assistantMsg.id,
       conversationId,
@@ -166,11 +170,12 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     } as any);
   }
 
-  // Artifact turn: explicit client flag OR keyword auto-detect, fresh turns only
-  // (skip on existingUserMessageId retry, mirroring image/mcq branches).
+  // Artifact turn: explicit client flag OR keyword auto-detect.
+  // Applies to retries too so an edited simulation prompt keeps streaming
+  // with the artifact system prompt instead of degrading to plain chat.
   // Continues the NORMAL streaming path — no special events, no new SSE type.
   const isArtifactTurn =
-    !existingUserMessageId && (artifact === true || wantsArtifact(userMsgContent));
+    artifact === true || wantsArtifact(userMsgContent);
 
   // Brand-aware artifact prompt: load the user's brand, fallback "default",
   // tolerate missing row/column (older DBs without UserSettings.brand).
