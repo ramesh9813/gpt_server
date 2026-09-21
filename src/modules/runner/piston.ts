@@ -2,14 +2,7 @@
 import { env } from "../../lib/config";
 import { CACHE_TTL_MS, RunnerError, type ExecuteResult, type Runtime } from "./types";
 
-const CACHE_TTL_MS = 5 * 60 * 1000;
-
 const pistonCache: { data: Runtime[] | null; fetchedAt: number } = {
-  data: null,
-  fetchedAt: 0
-};
-
-const wandboxCache: { data: WandboxCompiler[] | null; fetchedAt: number } = {
   data: null,
   fetchedAt: 0
 };

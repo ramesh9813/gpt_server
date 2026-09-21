@@ -19,6 +19,11 @@ const WANDBOX_LANGUAGE_ALIASES: Record<string, string> = {
   java: "Java"
 };
 
+const wandboxCache: { data: WandboxCompiler[] | null; fetchedAt: number } = {
+  data: null,
+  fetchedAt: 0
+};
+
 const getWandboxCompilers = async (): Promise<WandboxCompiler[]> => {
   const now = Date.now();
   if (wandboxCache.data && now - wandboxCache.fetchedAt < CACHE_TTL_MS) {
