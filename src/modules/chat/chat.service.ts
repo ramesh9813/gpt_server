@@ -87,10 +87,11 @@ export const RESEARCH_SYSTEM_PROMPT =
   "and a Sources section listing the URLs you relied on. Be factual, cite claims to sources, and note uncertainty " +
   "where sources disagree.";
 
-// Web search (OpenRouter server tool): the model searches live and cites
-// sources with markdown links. Opt-in per turn via `webSearch`; skipped when
-// deep-research mode is on (those models search autonomously and may reject
-// extra tools).
+// Web search (OpenRouter server tool): the model searches live website
+// content and cites sources with markdown links. Opt-in per turn via
+// `webSearch`; website search ONLY — never a reasoning/research process.
+// Skipped when deep-research mode is on (those models search autonomously
+// and may reject extra tools).
 export const WEB_SEARCH_SYSTEM_PROMPT =
   "You have live web search. Synthesize answers from search results and cite sources with markdown links.";
 
@@ -100,6 +101,10 @@ export const streamOpenRouterCompletion = async (
   opts: { assistantMessageId: string; conversationId: string; messages: OpenRouterMessage[]; selectedModel: string; research?: boolean; webSearch?: boolean }
 ) => {
   const { assistantMessageId, conversationId, messages, selectedModel, research, webSearch } = opts;
+  // Strict mode split: ONLY a deep-research turn runs the reasoning +
+  // research process. Web-search and normal turns get website/plain answers
+  // with no thinking stream — even if the model emits reasoning tokens.
+  const allowReasoning = research === true;
   if (!env.OPENROUTER_API_KEY) {
     await prisma.message.update({
       where: { id: assistantMessageId },
@@ -200,11 +205,13 @@ export const streamOpenRouterCompletion = async (
             assistantContent += delta;
             sendEvent("token", { delta });
           }
-          // Thinking stream: forwarded live for the reasoning accordion.
+          // Thinking stream: forwarded live for the reasoning accordion —
+          // deep-research turns ONLY. Web-search/normal turns never show
+          // a reasoning process, even if the model emits thinking tokens.
           const reasoning =
             parsed.choices?.[0]?.delta?.reasoning ??
             parsed.choices?.[0]?.delta?.reasoning_content;
-          if (typeof reasoning === "string" && reasoning.length > 0) {
+          if (allowReasoning && typeof reasoning === "string" && reasoning.length > 0) {
             assistantReasoning += reasoning;
             sendEvent("reasoning", { delta: reasoning });
           }
@@ -222,7 +229,7 @@ export const streamOpenRouterCompletion = async (
         lastPersistedAt = now;
         await prisma.message.update({
           where: { id: assistantMessageId },
-          data: { content: assistantContent, reasoning: assistantReasoning || null },
+          data: { content: assistantContent, reasoning: allowReasoning ? assistantReasoning || null : null },
         });
       }
     }
@@ -230,7 +237,7 @@ export const streamOpenRouterCompletion = async (
       where: { id: assistantMessageId },
       data: {
         content: assistantContent,
-        reasoning: assistantReasoning || null,
+        reasoning: allowReasoning ? assistantReasoning || null : null,
         status: "COMPLETE",
         model: selectedModel,
         promptTokens: usage?.prompt_tokens,
@@ -260,7 +267,7 @@ export const streamOpenRouterCompletion = async (
         where: { id: assistantMessageId },
         data: {
           content: assistantContent,
-          reasoning: assistantReasoning || null,
+          reasoning: allowReasoning ? assistantReasoning || null : null,
           status: "COMPLETE",
           model: selectedModel,
         },
