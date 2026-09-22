@@ -122,6 +122,7 @@ export const streamOpenRouterCompletion = async (
   const controller = new AbortController();
   req.on("close", () => controller.abort());
   let assistantContent = "";
+  let assistantReasoning = "";
   let lastPersistedLength = 0;
   let lastPersistedAt = Date.now();
   console.log("Sending messages to OpenRouter:", JSON.stringify(redactForLog(messages), null, 2));
@@ -149,6 +150,10 @@ export const streamOpenRouterCompletion = async (
     if (research) {
       // Research reports are long; raise the ceiling when in research mode.
       requestBody.max_tokens = 8000;
+      // Deep-research runs stream thinking tokens for 30-120s+ before the
+      // synthesis; request + forward them (no server timeout is imposed —
+      // the stream stays open until the model finishes or the client drops).
+      requestBody.include_reasoning = true;
     }
     const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
       method: "POST",
@@ -195,22 +200,37 @@ export const streamOpenRouterCompletion = async (
             assistantContent += delta;
             sendEvent("token", { delta });
           }
+          // Thinking stream: forwarded live for the reasoning accordion.
+          const reasoning =
+            parsed.choices?.[0]?.delta?.reasoning ??
+            parsed.choices?.[0]?.delta?.reasoning_content;
+          if (typeof reasoning === "string" && reasoning.length > 0) {
+            assistantReasoning += reasoning;
+            sendEvent("reasoning", { delta: reasoning });
+          }
           if (parsed.usage) usage = parsed.usage;
         } catch {
           // ignore malformed chunks
         }
       }
       const now = Date.now();
-      if (assistantContent.length - lastPersistedLength >= 200 || now - lastPersistedAt > 1000) {
-        lastPersistedLength = assistantContent.length;
+      if (
+        assistantContent.length + assistantReasoning.length - lastPersistedLength >= 200 ||
+        now - lastPersistedAt > 1000
+      ) {
+        lastPersistedLength = assistantContent.length + assistantReasoning.length;
         lastPersistedAt = now;
-        await prisma.message.update({ where: { id: assistantMessageId }, data: { content: assistantContent } });
+        await prisma.message.update({
+          where: { id: assistantMessageId },
+          data: { content: assistantContent, reasoning: assistantReasoning || null },
+        });
       }
     }
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: {
         content: assistantContent,
+        reasoning: assistantReasoning || null,
         status: "COMPLETE",
         model: selectedModel,
         promptTokens: usage?.prompt_tokens,
@@ -238,7 +258,12 @@ export const streamOpenRouterCompletion = async (
     if (controller.signal.aborted) {
       await prisma.message.update({
         where: { id: assistantMessageId },
-        data: { content: assistantContent, status: "COMPLETE", model: selectedModel },
+        data: {
+          content: assistantContent,
+          reasoning: assistantReasoning || null,
+          status: "COMPLETE",
+          model: selectedModel,
+        },
       });
       await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
       return safeEnd();
