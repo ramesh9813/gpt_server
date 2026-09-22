@@ -45,7 +45,7 @@ model UserSettings {
   imageModel  String    @default("default")
   videoModel  String    @default("default")
   pinHeader   Boolean   @default(false)
-  appFontSize Int       @default(16)
+  appFontSize Int       @default(18)
   iconScale   Float     @default(1)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
