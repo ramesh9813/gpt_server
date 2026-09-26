@@ -54,13 +54,14 @@ router.post(
     }
 
     try {
-      const models = await fetchByokModels(provider, trimmedKey);
+      const catalog = await fetchByokModels(provider, trimmedKey);
       return res.json({
         success: true,
         data: {
           supported: true,
           verified: true,
-          models,
+          models: catalog.models,
+          freeIds: catalog.freeIds,
           message: `${provider.name} key verified.`,
         },
       });
@@ -126,10 +127,10 @@ router.post(
     }
 
     try {
-      const models = await fetchByokModels(provider, trimmedKey);
+      const catalog = await fetchByokModels(provider, trimmedKey);
       return res.json({
         success: true,
-        data: { models, keyRequired: false },
+        data: { models: catalog.models, freeIds: catalog.freeIds, keyRequired: false },
       });
     } catch (err: any) {
       const status = err?.status;

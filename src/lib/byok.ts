@@ -46,6 +46,9 @@ export type ByokProvider = {
   models: string[];
   // Extra headers for chat/completions calls (e.g. OpenRouter attribution).
   chatHeaders?: Record<string, string>;
+  // True when every model on the provider is usable under a free tier credit
+  // (e.g. Groq / NVIDIA dev tiers) — the "Free only" filter keeps everything.
+  allModelsFree?: boolean;
 };
 
 export const BYOK_PROVIDERS: Record<ByokProviderId, ByokProvider> = {
@@ -138,6 +141,7 @@ export const BYOK_PROVIDERS: Record<ByokProviderId, ByokProvider> = {
     keyPattern: /^nvapi-[A-Za-z0-9_-]{20,}$/,
     keyHint: "nvapi-...",
     keylessModels: true, // GET /models works without a key
+    allModelsFree: true, // NVIDIA NIM dev tier is free (rate-limited)
     models: [
       "meta/llama-3.3-70b-instruct",
       "nvidia/llama-3.1-nemotron-70b-instruct",
@@ -196,6 +200,7 @@ export const BYOK_PROVIDERS: Record<ByokProviderId, ByokProvider> = {
     keyPattern: /^gsk_[A-Za-z0-9]{20,}$/,
     keyHint: "gsk_...",
     keylessModels: false,
+    allModelsFree: true, // Groq's tier is free (rate-limited) for all models
     models: [
       "llama-3.3-70b-versatile",
       "llama-3.1-8b-instant",
@@ -314,13 +319,17 @@ export const parseByokHeaders = (
   return { provider, model, apiKey };
 };
 
+export type ByokModelCatalog = { models: string[]; freeIds: string[] };
+
 // GET the provider's LIVE model catalog (optionally authenticated with the
 // user's key). Providers marking keylessModels can be listed without a key;
-// others throw a 401/403 which the route maps to "key required".
+// others throw a 401/403 which the route maps to "key required". freeIds is
+// populated when the provider reports pricing (OpenRouter: zero-priced or
+// ":free" suffixed ids) or when every model is under a free tier.
 export const fetchByokModels = async (
   provider: ByokProvider,
   apiKey: string = ""
-): Promise<string[]> => {
+): Promise<ByokModelCatalog> => {
   if (provider.kind === "anthropic") {
     const response = await fetch(`${provider.baseUrl}/models`, {
       headers: {
@@ -338,10 +347,11 @@ export const fetchByokModels = async (
     }
     const json = (await response.json()) as any;
     const list: any[] = Array.isArray(json?.data) ? json.data : [];
-    return list
+    const models = list
       .map((m) => String(m?.id ?? ""))
       .filter(Boolean)
       .slice(0, 500);
+    return { models, freeIds: [] };
   }
 
   if (provider.kind === "gemini") {
@@ -358,7 +368,7 @@ export const fetchByokModels = async (
     }
     const json = (await response.json()) as any;
     const list: any[] = Array.isArray(json?.models) ? json.models : [];
-    return list
+    const models = list
       .filter(
         (m) =>
           typeof m?.name === "string" &&
@@ -368,6 +378,7 @@ export const fetchByokModels = async (
       .map((m) => String(m.name).replace(/^models\//, ""))
       .filter(Boolean)
       .slice(0, 500);
+    return { models, freeIds: [] };
   }
 
   const response = await fetch(`${provider.baseUrl}/models`, {
@@ -393,5 +404,23 @@ export const fetchByokModels = async (
         !/(audio|realtime|image|tts|embed|moderation|instruct)/i.test(id)
     );
   }
-  return ids.slice(0, 500);
+  // Free-tier detection where the catalog exposes pricing (OpenRouter) or
+  // ":free" id suffixes; plus whole-provider free tiers (Groq/NVIDIA dev).
+  const freeIds = new Set<string>();
+  if (provider.allModelsFree) {
+    for (const id of ids) freeIds.add(id);
+  }
+  for (const m of list) {
+    const id = String(m?.id ?? "");
+    if (!id) continue;
+    if (id.toLowerCase().endsWith(":free")) {
+      freeIds.add(id);
+      continue;
+    }
+    const p = m?.pricing;
+    if (p && Number.parseFloat(String(p.prompt ?? "")) === 0 && Number.parseFloat(String(p.completion ?? "")) === 0) {
+      freeIds.add(id);
+    }
+  }
+  return { models: ids.slice(0, 500), freeIds: [...freeIds] };
 };
