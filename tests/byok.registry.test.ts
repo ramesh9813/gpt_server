@@ -6,13 +6,17 @@ import {
 } from "../src/lib/byok";
 
 describe("byok provider registry", () => {
-  it("exposes all twelve providers", () => {
+  it("exposes all sixteen providers", () => {
     expect(Object.keys(BYOK_PROVIDERS).sort()).toEqual([
       "anthropic",
+      "apinex",
+      "cleanapis",
+      "codecraft",
       "deepseek",
       "google",
       "grok",
       "groq",
+      "infron",
       "meta",
       "mistral",
       "moonshot",
@@ -31,9 +35,10 @@ describe("byok provider registry", () => {
     expect(getByokProvider(undefined)).toBeNull();
   });
 
-  it("marks keyless-model providers (OpenRouter, NVIDIA) only", () => {
+  it("marks keyless-model providers (OpenRouter, NVIDIA, Infron) only", () => {
     expect(BYOK_PROVIDERS.openrouter.keylessModels).toBe(true);
     expect(BYOK_PROVIDERS.nvidia.keylessModels).toBe(true);
+    expect(BYOK_PROVIDERS.infron.keylessModels).toBe(true);
     expect(BYOK_PROVIDERS.openai.keylessModels).toBe(false);
     expect(BYOK_PROVIDERS.google.keylessModels).toBe(false);
     expect(BYOK_PROVIDERS.grok.keylessModels).toBe(false);
@@ -44,6 +49,9 @@ describe("byok provider registry", () => {
     expect(BYOK_PROVIDERS.groq.keylessModels).toBe(false);
     expect(BYOK_PROVIDERS.mistral.keylessModels).toBe(false);
     expect(BYOK_PROVIDERS.anthropic.keylessModels).toBe(false);
+    expect(BYOK_PROVIDERS.cleanapis.keylessModels).toBe(false);
+    expect(BYOK_PROVIDERS.apinex.keylessModels).toBe(false);
+    expect(BYOK_PROVIDERS.codecraft.keylessModels).toBe(false);
   });
 
   it("checks key formats per provider", () => {
@@ -73,6 +81,28 @@ describe("byok provider registry", () => {
 
     const meta = getByokProvider("meta")!;
     expect(isByokKeyFormatSupported(meta, "LLM|1234567890|abcdef")).toBe(true);
+
+    const cleanapis = getByokProvider("cleanapis")!;
+    expect(isByokKeyFormatSupported(cleanapis, "cc_" + "h".repeat(40))).toBe(true);
+    expect(isByokKeyFormatSupported(cleanapis, "sk-" + "a".repeat(48))).toBe(false);
+
+    const codecraft = getByokProvider("codecraft")!;
+    expect(isByokKeyFormatSupported(codecraft, "cc_" + "i".repeat(48))).toBe(true);
+
+    // Lenient-format routers (Infron, APInex): any token-like string passes
+    // the instant check; "Verify key" does the real provider round-trip.
+    const infron = getByokProvider("infron")!;
+    expect(isByokKeyFormatSupported(infron, "infron-key-1234567890")).toBe(true);
+    expect(isByokKeyFormatSupported(infron, "short")).toBe(false);
+
+    const apinex = getByokProvider("apinex")!;
+    expect(isByokKeyFormatSupported(apinex, "apx.key-1234567890")).toBe(true);
+    expect(isByokKeyFormatSupported(apinex, "no")).toBe(false);
+
+    expect(BYOK_PROVIDERS.infron.keylessModels).toBe(true);
+    expect(BYOK_PROVIDERS.cleanapis.keylessModels).toBe(false);
+    expect(BYOK_PROVIDERS.apinex.keylessModels).toBe(false);
+    expect(BYOK_PROVIDERS.codecraft.keylessModels).toBe(false);
 
     const deepseek = getByokProvider("deepseek")!;
     expect(isByokKeyFormatSupported(deepseek, "sk-" + "e".repeat(32))).toBe(true);

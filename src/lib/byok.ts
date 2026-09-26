@@ -24,7 +24,11 @@ export type ByokProviderId =
   | "moonshot"
   | "groq"
   | "mistral"
-  | "anthropic";
+  | "anthropic"
+  | "cleanapis"
+  | "infron"
+  | "apinex"
+  | "codecraft";
 export type ByokApiKind = "openai" | "gemini" | "anthropic";
 
 export type ByokProvider = {
@@ -224,6 +228,52 @@ export const BYOK_PROVIDERS: Record<ByokProviderId, ByokProvider> = {
     keyHint: "sk-ant-...",
     keylessModels: false,
     models: ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"],
+  },
+  cleanapis: {
+    id: "cleanapis",
+    name: "CleanAPIs",
+    kind: "openai",
+    baseUrl: "https://cleanapis.com/v1",
+    // Keys are issued as cc_… (docs: "Bearer cc_your_key_here").
+    keyPattern: /^cc_[A-Za-z0-9_-]{16,}$/,
+    keyHint: "cc_...",
+    keylessModels: false,
+    // No bundled fallback: the live /v1/models catalog loads the moment a
+    // valid cc_… key is entered.
+    models: [],
+  },
+  infron: {
+    id: "infron",
+    name: "Infron",
+    kind: "openai",
+    baseUrl: "https://llm.onerouter.pro/v1",
+    // Router platform; key prefix is not documented — accept any token-like
+    // key and let Verify hit /v1/models for the real check.
+    keyPattern: /^[A-Za-z0-9][A-Za-z0-9_.-]{15,}$/,
+    keyHint: "your API key",
+    keylessModels: true, // GET /v1/models worked keyless at publish time
+    models: [],
+  },
+  apinex: {
+    id: "apinex",
+    name: "APInex",
+    kind: "openai",
+    baseUrl: "https://apinex.bond/v1",
+    keyPattern: /^[A-Za-z0-9][A-Za-z0-9_.-]{15,}$/,
+    keyHint: "your API key",
+    keylessModels: false,
+    models: [],
+  },
+  codecraft: {
+    id: "codecraft",
+    name: "CodeCraft API",
+    kind: "openai",
+    baseUrl: "https://codecraftapi.com/v1",
+    // Keys look like "cc_" + 48 characters (per their Getting Started docs).
+    keyPattern: /^cc_[A-Za-z0-9_-]{16,}$/,
+    keyHint: "cc_...",
+    keylessModels: false,
+    models: [],
   },
 };
 
