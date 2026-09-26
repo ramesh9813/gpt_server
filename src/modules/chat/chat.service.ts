@@ -35,6 +35,7 @@ export const streamSchema = z
     research: z.boolean().optional(),
     artifact: z.boolean().optional(),
     webSearch: z.boolean().optional(),
+    think: z.boolean().optional(),
   })
   .refine((data) => data.userMessage || data.existingUserMessageId || (data.images && data.images.length > 0), {
     message: "userMessage or existingUserMessageId or images is required",
@@ -103,13 +104,14 @@ export const WEB_SEARCH_SYSTEM_PROMPT =
 export const streamOpenRouterCompletion = async (
   req: Request,
   res: Response,
-  opts: { assistantMessageId: string; conversationId: string; messages: OpenRouterMessage[]; selectedModel: string; research?: boolean; webSearch?: boolean; canvaUserId?: string }
+  opts: { assistantMessageId: string; conversationId: string; messages: OpenRouterMessage[]; selectedModel: string; research?: boolean; webSearch?: boolean; think?: boolean; canvaUserId?: string }
 ) => {
-  const { assistantMessageId, conversationId, messages, selectedModel, research, webSearch, canvaUserId } = opts;
-  // Strict mode split: ONLY a deep-research turn runs the reasoning +
-  // research process. Web-search and normal turns get website/plain answers
-  // with no thinking stream — even if the model emits reasoning tokens.
-  const allowReasoning = research === true;
+  const { assistantMessageId, conversationId, messages, selectedModel, research, webSearch, think, canvaUserId } = opts;
+  const startedAt = Date.now();
+  // Reasoning stream: forwarded for deep-research turns, and for explicit
+  // "Thinking" mode turns (Think chip in the composer). Plain/web-search turns
+  // still get plain answers even if the model emits thinking tokens.
+  const allowReasoning = research === true || think === true;
   if (!env.OPENROUTER_API_KEY) {
     await prisma.message.update({
       where: { id: assistantMessageId },
@@ -182,8 +184,10 @@ export const streamOpenRouterCompletion = async (
     if (research) {
       // Research reports are long; raise the ceiling when in research mode.
       requestBody.max_tokens = 8000;
-      // Deep-research runs stream thinking tokens for 30-120s+ before the
-      // synthesis; request + forward them (no server timeout is imposed —
+    }
+    if (research || think) {
+      // Deep-research and "Thinking" mode runs stream thinking tokens before
+      // the synthesis; request + forward them (no server timeout is imposed —
       // the stream stays open until the model finishes or the client drops).
       requestBody.include_reasoning = true;
     }
@@ -323,6 +327,7 @@ export const streamOpenRouterCompletion = async (
             reasoning: allowReasoning ? assistantReasoning || null : null,
             status: "COMPLETE",
             model: selectedModel,
+            durationMs: Date.now() - startedAt,
           },
         });
         await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
@@ -360,10 +365,11 @@ export const streamOpenRouterCompletion = async (
         promptTokens: usage?.prompt_tokens,
         completionTokens: usage?.completion_tokens,
         tokenCount: usage?.total_tokens,
+        durationMs: Date.now() - startedAt,
       },
     });
     await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
-    sendEvent("done", { messageId: assistantMessageId, usage: usage || {} });
+    sendEvent("done", { messageId: assistantMessageId, usage: usage || {}, durationMs: Date.now() - startedAt });
     // Best-effort follow-up questions (never fails the stream).
     try {
       const followups = await generateFollowups(selectedModel, assistantContent);
@@ -387,6 +393,7 @@ export const streamOpenRouterCompletion = async (
           reasoning: allowReasoning ? assistantReasoning || null : null,
           status: "COMPLETE",
           model: selectedModel,
+          durationMs: Date.now() - startedAt,
         },
       });
       await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });

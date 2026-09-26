@@ -36,6 +36,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     research,
     artifact,
     webSearch,
+    think,
   }: {
     conversationId: string;
     userMessage?: string;
@@ -46,6 +47,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     research?: boolean;
     artifact?: boolean;
     webSearch?: boolean;
+    think?: boolean;
   } = req.body;
 
   const conversation = await prisma.conversation.findFirst({
@@ -153,9 +155,44 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     : systemPrompt;
 
   // BYOK turn: plain-text chat streamed from the user's own provider key.
-  // Quiz/image/video/web-search/research turns remain OpenRouter-driven and
-  // are skipped here; nothing below changes when BYOK headers are absent.
+  // Image/video/web-search/research turns remain OpenRouter-driven and are
+  // skipped here; nothing below changes when BYOK headers are absent.
   if (byok) {
+    // MCQ quiz turns work on BYOK providers too (same prompt + parsing applied
+    // to the user's own model instead of the server default).
+    if (wantsMcq(userMsgContent)) {
+      const topic = userMsgContent.replace(/^\s*mcq\b/i, "").trim();
+      if (!topic) {
+        return sendSimpleTextFinish(req, res, {
+          assistantMessageId: assistantMsg.id,
+          conversationId,
+          selectedModel,
+          text: "Tell me a topic for the quiz — e.g. `mcq solar system`.",
+        });
+      }
+      const rawAsked = (conversation as unknown as { quizAsked?: unknown }).quizAsked;
+      const askedBank: string[] = Array.isArray(rawAsked)
+        ? rawAsked.filter((v): v is string => typeof v === "string")
+        : [];
+      let quizCount = 0;
+      try {
+        quizCount = await (prisma.message as any).count({
+          where: { conversationId, NOT: { quiz: null } },
+        });
+      } catch {
+        quizCount = 0;
+      }
+      const round = (typeof quizCount === "number" ? quizCount : 0) + 1;
+      return sendMcqReply(req, res, {
+        assistantMessageId: assistantMsg.id,
+        conversationId,
+        topic,
+        selectedModel,
+        askedBank,
+        round,
+        byok,
+      });
+    }
     const { messages, stats } = buildHistoryMessages(history, {
       systemPrompt: effectiveSystemPrompt,
       existingUserMessageId,
@@ -165,12 +202,14 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       JSON.stringify(redactForLog(messages as OpenRouterMessage[]), null, 2),
       "historyStats:",
       JSON.stringify(stats),
+      think === true ? "think mode ON" : "think mode OFF",
     );
     return streamByokCompletion(req, res, {
       assistantMessageId: assistantMsg.id,
       conversationId,
       messages: messages as OpenRouterMessage[],
       byok,
+      think: think === true,
     });
   }
 
@@ -260,6 +299,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     selectedModel,
     research: research === true,
     webSearch: webSearch === true,
+    think: think === true,
     // Connector tools (Canva): resolved best-effort inside the streamer.
     // Disconnected users get [] and byte-identical behavior to before.
     canvaUserId: req.user!.id,

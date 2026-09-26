@@ -104,6 +104,8 @@ model Message {
   error          String?
   followups      Json?
   quiz           Json?
+  // Wall-clock time the assistant turn took (ms), set when the turn settles.
+  durationMs     Int?
 
   conversation Conversation @relation(fields: [conversationId], references: [id])
 

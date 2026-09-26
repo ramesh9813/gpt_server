@@ -24,16 +24,18 @@ export const finishTextReply = async (
     text: string;
     sendEvent: (event: string, data: unknown) => void;
     safeEnd: () => void;
+    startedAt?: number;
   }
 ) => {
-  const { assistantMessageId, conversationId, selectedModel, text, sendEvent, safeEnd } = opts;
+  const { assistantMessageId, conversationId, selectedModel, text, sendEvent, safeEnd, startedAt } = opts;
+  const durationMs = typeof startedAt === "number" ? Date.now() - startedAt : undefined;
   await prisma.message.update({
     where: { id: assistantMessageId },
-    data: { content: text, status: "COMPLETE", model: selectedModel },
+    data: { content: text, status: "COMPLETE", model: selectedModel, ...(durationMs !== undefined ? { durationMs } : {}) },
   });
   await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
   sendEvent("token", { delta: text });
-  sendEvent("done", { messageId: assistantMessageId, usage: {} });
+  sendEvent("done", { messageId: assistantMessageId, usage: {}, ...(durationMs !== undefined ? { durationMs } : {}) });
   return safeEnd();
 };
 

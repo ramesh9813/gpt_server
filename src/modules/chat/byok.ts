@@ -5,6 +5,7 @@
 import type { Request, Response } from "express";
 import { prisma } from "../../lib/prisma";
 import type { ByokRequest } from "../../lib/byok";
+import { generateByokFollowups } from "./followups";
 import type { OpenRouterMessage } from "./chat.service";
 
 // ---- Gemini request shaping -------------------------------------------------
@@ -127,11 +128,15 @@ export const streamByokCompletion = async (
     conversationId: string;
     messages: OpenRouterMessage[];
     byok: ByokRequest;
+    think?: boolean;
   }
 ) => {
-  const { assistantMessageId, conversationId, messages, byok } = opts;
+  const { assistantMessageId, conversationId, messages, byok, think } = opts;
   const { provider, model, apiKey } = byok;
   const storedModel = `${provider.id}:${model}`;
+  const startedAt = Date.now();
+  // "Thinking" mode: only forward reasoning tokens when the user armed it.
+  const allowReasoning = think === true;
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -150,20 +155,30 @@ export const streamByokCompletion = async (
   req.on("close", () => controller.abort());
 
   let assistantContent = "";
+  let assistantReasoning = "";
   let lastPersistedLength = 0;
   let lastPersistedAt = Date.now();
 
   const persistProgress = async () => {
     await prisma.message.update({
       where: { id: assistantMessageId },
-      data: { content: assistantContent },
+      data: {
+        content: assistantContent,
+        reasoning: allowReasoning ? assistantReasoning || null : null,
+      },
     });
   };
 
   const finishAborted = async () => {
     await prisma.message.update({
       where: { id: assistantMessageId },
-      data: { content: assistantContent, status: "COMPLETE", model: storedModel },
+      data: {
+        content: assistantContent,
+        reasoning: allowReasoning ? assistantReasoning || null : null,
+        status: "COMPLETE",
+        model: storedModel,
+        durationMs: Date.now() - startedAt,
+      },
     });
     await prisma.conversation.update({
       where: { id: conversationId },
@@ -196,8 +211,12 @@ export const streamByokCompletion = async (
         },
         body: JSON.stringify({
           model,
-          max_tokens: 4096,
+          // Thinking mode needs headroom above the reasoning budget.
+          max_tokens: allowReasoning ? 8192 : 4096,
           stream: true,
+          ...(allowReasoning
+            ? { thinking: { type: "enabled", budget_tokens: 2048 } }
+            : {}),
           ...(system ? { system } : {}),
           messages: anthropicMessages,
         }),
@@ -212,7 +231,12 @@ export const streamByokCompletion = async (
             "Content-Type": "application/json",
             "x-goog-api-key": apiKey,
           },
-          body: JSON.stringify(toGeminiPayload(messages)),
+          body: JSON.stringify({
+            ...toGeminiPayload(messages),
+            ...(allowReasoning
+              ? { generationConfig: { thinkingConfig: { includeThoughts: true } } }
+              : {}),
+          }),
           signal: controller.signal,
         }
       );
@@ -270,6 +294,8 @@ export const streamByokCompletion = async (
           if (provider.kind === "anthropic") {
             // Messages-API SSE: text lives in content_block_delta events; usage
             // arrives via message_start (input) and message_delta (output).
+            // Thinking mode adds thinking_delta blocks we forward as
+            // `reasoning` events (same contract as the OpenRouter path).
             const type = parsed?.type;
             if (
               type === "content_block_delta" &&
@@ -279,6 +305,16 @@ export const streamByokCompletion = async (
             ) {
               assistantContent += parsed.delta.text;
               sendEvent("token", { delta: parsed.delta.text });
+            }
+            if (
+              allowReasoning &&
+              type === "content_block_delta" &&
+              parsed.delta?.type === "thinking_delta" &&
+              typeof parsed.delta.thinking === "string" &&
+              parsed.delta.thinking.length > 0
+            ) {
+              assistantReasoning += parsed.delta.thinking;
+              sendEvent("reasoning", { delta: parsed.delta.thinking });
             }
             if (type === "message_start" && parsed.message?.usage) {
               usage = {
@@ -297,8 +333,18 @@ export const streamByokCompletion = async (
             const parts = parsed?.candidates?.[0]?.content?.parts;
             if (Array.isArray(parts)) {
               for (const part of parts) {
-                // Skip thinking-model "thought" parts; forward plain text.
-                if (part?.thought) continue;
+                if (part?.thought) {
+                  // Thinking parts: forwarded as `reasoning` only in Think mode.
+                  if (
+                    allowReasoning &&
+                    typeof part?.text === "string" &&
+                    part.text.length > 0
+                  ) {
+                    assistantReasoning += part.text;
+                    sendEvent("reasoning", { delta: part.text });
+                  }
+                  continue;
+                }
                 if (typeof part?.text === "string" && part.text.length > 0) {
                   assistantContent += part.text;
                   sendEvent("token", { delta: part.text });
@@ -319,6 +365,16 @@ export const streamByokCompletion = async (
             if (typeof delta === "string" && delta.length > 0) {
               assistantContent += delta;
               sendEvent("token", { delta });
+            }
+            // Thinking stream (DeepSeek reasoner, xAI grok reasoning models
+            // etc. emit delta.reasoning / reasoning_content): forward only in
+            // Think mode, same contract as the OpenRouter path.
+            const reasoning =
+              parsed.choices?.[0]?.delta?.reasoning ??
+              parsed.choices?.[0]?.delta?.reasoning_content;
+            if (allowReasoning && typeof reasoning === "string" && reasoning.length > 0) {
+              assistantReasoning += reasoning;
+              sendEvent("reasoning", { delta: reasoning });
             }
             if (parsed.usage) usage = parsed.usage;
           }
@@ -341,18 +397,38 @@ export const streamByokCompletion = async (
       where: { id: assistantMessageId },
       data: {
         content: assistantContent,
+        reasoning: allowReasoning ? assistantReasoning || null : null,
         status: "COMPLETE",
         model: storedModel,
         promptTokens: usage?.prompt_tokens,
         completionTokens: usage?.completion_tokens,
         tokenCount: usage?.total_tokens,
+        durationMs: Date.now() - startedAt,
       },
     });
     await prisma.conversation.update({
       where: { id: conversationId },
       data: { updatedAt: new Date() },
     });
-    sendEvent("done", { messageId: assistantMessageId, usage: usage || {} });
+    sendEvent("done", {
+      messageId: assistantMessageId,
+      usage: usage || {},
+      durationMs: Date.now() - startedAt,
+    });
+    // Best-effort follow-up questions, generated on the user's own provider
+    // (same UX as the OpenRouter path; never fails the stream).
+    try {
+      const followups = await generateByokFollowups(byok, assistantContent);
+      if (followups.length > 0 && !res.writableEnded && !res.destroyed) {
+        await prisma.message.update({
+          where: { id: assistantMessageId },
+          data: { followups },
+        });
+        sendEvent("followups", { messageId: assistantMessageId, followups });
+      }
+    } catch (err) {
+      console.error("BYOK followups error:", (err as any)?.message || err);
+    }
     return safeEnd();
   } catch (err: any) {
     if (controller.signal.aborted) {

@@ -1,15 +1,17 @@
 // Follow-up question generation — split from chat.service.ts. No logic changes.
 import { env } from "../../lib/config";
+import type { ByokRequest } from "../../lib/byok";
+import { callByokText } from "./byokCall";
 
 const cleanQuestion = (v: string): string => {
   const bullets = String.raw`[-*\d.\s:;)\]]`;
-  const quotes = "\u201c\u201d\u2018\u2019";
+  const quotes = "“”‘’";
   const leading = new RegExp(`^${bullets}+`);
   const wrapping = new RegExp(`^[\"'${quotes}\`*]+|[\"'${quotes}\`*]+$`, "g");
   return v.trim().replace(leading, "").replace(wrapping, "").trim();
 };
 
-const parseFollowups = (text: string): string[] => {
+export const parseFollowups = (text: string): string[] => {
   const cleaned = (text || "")
     .trim()
     // strip markdown fences some models wrap around the JSON
@@ -79,5 +81,25 @@ export const generateFollowups = async (model: string, answer: string): Promise<
   if (!response.ok) return [];
   const json = (await response.json()) as any;
   const text: string = json?.choices?.[0]?.message?.content ?? "";
+  return parseFollowups(text);
+};
+
+// BYOK variant: same prompt + parsing, but the call goes to the user's own
+// provider key (OpenAI-compatible / Gemini / Claude Messages API). Best-effort:
+// any failure just yields no follow-ups, exactly like the OpenRouter path.
+export const FOLLOWUP_PROMPT_PREFIX =
+  "Suggest 3 short follow-up questions a user might ask next about this answer. Reply with ONLY a JSON array of strings, no other text. Answer: ";
+
+export const generateByokFollowups = async (
+  byok: ByokRequest,
+  answer: string
+): Promise<string[]> => {
+  const excerpt = (answer || "").trim().replace(/\s+/g, " ").slice(0, 2000);
+  if (!excerpt) return [];
+  const text = await callByokText(byok, `${FOLLOWUP_PROMPT_PREFIX}${excerpt}`, {
+    maxTokens: 150,
+    temperature: 0.7,
+  });
+  if (!text) return [];
   return parseFollowups(text);
 };

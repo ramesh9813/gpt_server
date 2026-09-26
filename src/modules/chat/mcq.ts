@@ -3,6 +3,8 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { env } from "../../lib/config";
 import { sseHead, sseSend, sseEnd, finishTextReply } from "./sse";
+import type { ByokRequest } from "../../lib/byok";
+import { callByokText } from "./byokCall";
 
 // ---------------------------------------------------------------------------
 // MCQ quiz generation (non-streaming turn, SSE-framed quiz event)
@@ -76,6 +78,9 @@ export type McqReplyOpts = {
   selectedModel: string;
   askedBank: string[];
   round: number;
+  // When set, quiz generation runs on the user's own provider key (BYOK)
+  // instead of the server-configured OpenRouter key.
+  byok?: ByokRequest;
 };
 
 const MCQ_REPEAT_BYPASS = /repeat|shuffle|again/i;
@@ -128,11 +133,12 @@ const parseMcqText = (text: string): McqQuestion[] | null => {
 
 export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
   const { assistantMessageId, conversationId, topic, selectedModel, askedBank, round } = opts;
+  const startedAt = Date.now();
   sseHead(res);
   const sendEvent = sseSend(res);
   const safeEnd = sseEnd(res);
   const finishText = async (text: string) => {
-    return finishTextReply(res, { assistantMessageId, conversationId, selectedModel, text, sendEvent, safeEnd });
+    return finishTextReply(res, { assistantMessageId, conversationId, selectedModel, text, sendEvent, safeEnd, startedAt });
   };
 
   const cleanTopic = (topic || "").trim();
@@ -155,6 +161,15 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
 
     const attemptOnce = async (askCount: number, askExclusion: string[]): Promise<McqQuestion[] | null> => {
       const askPrompt = buildMcqPrompt(topicForPrompt, askCount, askExclusion);
+      const askMaxTokens = Math.min(8000, Math.max(2000, askCount * 250));
+      // BYOK: ask the user's provider directly (same prompt + parsing).
+      if (opts.byok) {
+        const text = await callByokText(opts.byok, askPrompt, {
+          maxTokens: askMaxTokens,
+          temperature: 0.3,
+        });
+        return text ? parseMcqText(text) : null;
+      }
       try {
         const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
           method: "POST",
@@ -220,7 +235,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
 
     await (prisma.message.update as any)({
       where: { id: assistantMessageId },
-      data: { content: "", quiz, status: "COMPLETE", model: selectedModel },
+      data: { content: "", quiz, status: "COMPLETE", model: selectedModel, durationMs: Date.now() - startedAt },
     });
 
     // Append new question texts to conversation quizAsked (dedupe, cap 200).
@@ -266,7 +281,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
     }
 
     sendEvent("quiz", { messageId: assistantMessageId, quiz });
-    sendEvent("done", { messageId: assistantMessageId, usage: {} });
+    sendEvent("done", { messageId: assistantMessageId, usage: {}, durationMs: Date.now() - startedAt });
     // NO followups call for quiz turns.
     return safeEnd();
   } catch (err: any) {
