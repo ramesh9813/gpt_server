@@ -32,6 +32,7 @@ model User {
   folders      Folder[]
   refreshTokens RefreshToken[]
   settings     UserSettings?
+  connectorTokens ConnectorToken[]
 }
 
 model UserSettings {
@@ -118,6 +119,40 @@ model RefreshToken {
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+// Third-party connector OAuth tokens (e.g. Canva). Secrets are stored
+// AES-256-GCM encrypted — never plaintext. One row per user+provider.
+model ConnectorToken {
+  id                 String    @id @default(cuid())
+  userId             String
+  provider           String
+  accessTokenCipher  String
+  refreshTokenCipher String?
+  scope              String?
+  expiresAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([userId])
+}
+
+// Single-use PKCE/state records for connector OAuth handshakes.
+// The code_verifier lives here only for the few minutes of the flow,
+// keyed by a hashed state value so the raw state never needs storage.
+model ConnectorOAuthState {
+  id                 String   @id @default(cuid())
+  userId             String
+  provider           String
+  stateHash          String   @unique
+  codeVerifier       String
+  createdAt          DateTime @default(now())
+  expiresAt          DateTime
 
   @@index([userId])
 }

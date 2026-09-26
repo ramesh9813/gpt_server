@@ -29,7 +29,19 @@ const envSchema = z.object({
   RUNNER_BASE_URL: z.string().default("https://emkc.org/api/v2/piston"),
   WANDBOX_BASE_URL: z.string().default("https://wandbox.org"),
   RUNNER_TIMEOUT_MS: z.string().optional(),
-  OWNER_EMAILS: z.string().default("rameshsingh9813@gmail.com")
+  OWNER_EMAILS: z.string().default("rameshsingh9813@gmail.com"),
+  // --- Canva connector (MCP client) ---
+  CANVA_CLIENT_ID: z.string().default(""),
+  CANVA_CLIENT_SECRET: z.string().default(""),
+  // Must exactly match a redirect URL registered in the Canva developer portal.
+  CANVA_REDIRECT_URI: z.string().default(""),
+  // Space-separated, minimum scopes. Must all be enabled in the portal.
+  CANVA_SCOPES: z
+    .string()
+    .default("design:content:read design:meta:read asset:read brandtemplate:meta:read profile:read folder:read"),
+  CANVA_MCP_URL: z.string().default("https://mcp.canva.com/mcp"),
+  // 64 hex chars (32 bytes) for AES-256-GCM token encryption at rest.
+  CONNECTOR_ENCRYPTION_KEY: z.string().default(""),
 });
 
 export const env = envSchema.parse(normalizedEnv);

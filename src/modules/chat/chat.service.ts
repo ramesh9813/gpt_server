@@ -3,6 +3,11 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { env } from "../../lib/config";
 import { generateFollowups } from "./followups";
+import {
+  getAvailableTools,
+  executeMcpTool,
+  type LlmToolDef,
+} from "../llm/toolBridge";
 
 // Vision: inline base64 dataURLs, no storage/S3. Keep small to fit 10mb JSON body.
 export const MAX_IMAGES = 3;
@@ -98,9 +103,9 @@ export const WEB_SEARCH_SYSTEM_PROMPT =
 export const streamOpenRouterCompletion = async (
   req: Request,
   res: Response,
-  opts: { assistantMessageId: string; conversationId: string; messages: OpenRouterMessage[]; selectedModel: string; research?: boolean; webSearch?: boolean }
+  opts: { assistantMessageId: string; conversationId: string; messages: OpenRouterMessage[]; selectedModel: string; research?: boolean; webSearch?: boolean; canvaUserId?: string }
 ) => {
-  const { assistantMessageId, conversationId, messages, selectedModel, research, webSearch } = opts;
+  const { assistantMessageId, conversationId, messages, selectedModel, research, webSearch, canvaUserId } = opts;
   // Strict mode split: ONLY a deep-research turn runs the reasoning +
   // research process. Web-search and normal turns get website/plain answers
   // with no thinking stream — even if the model emits reasoning tokens.
@@ -130,25 +135,47 @@ export const streamOpenRouterCompletion = async (
   let assistantReasoning = "";
   let lastPersistedLength = 0;
   let lastPersistedAt = Date.now();
+  // Connector tools (Canva, OpenAI function-calling schema). Best-effort:
+  // [] when disconnected/unconfigured, so the streaming path below is
+  // untouched for everyone else. Skipped for deep-research turns (those
+  // models search autonomously and may reject extra tools) — same
+  // rationale as the web-search tool skip.
+  let canvaTools: LlmToolDef[] = [];
+  if (canvaUserId && research !== true) {
+    try {
+      canvaTools = await getAvailableTools(canvaUserId);
+    } catch {
+      canvaTools = [];
+    }
+  }
+  type PendingToolCall = { id: string; name: string; arguments: string };
   console.log("Sending messages to OpenRouter:", JSON.stringify(redactForLog(messages), null, 2));
-  try {
+
+  // One streamed completion turn. Appends text/reasoning into the shared
+  // buffers (persisted + forwarded live) and collects tool_calls deltas.
+  // terminal:true means an error was already sent — the caller must return.
+  const runTurn = async (
+    turnMessages: OpenRouterMessage[]
+  ): Promise<{ usage: any; toolCalls: PendingToolCall[]; terminal: boolean }> => {
+    const pending: PendingToolCall[] = [];
     const useWebTool = webSearch === true && research !== true;
+    const webTools = useWebTool
+      ? [
+          {
+            type: "openrouter:web_search",
+            parameters: { engine: "auto", max_results: 5 },
+          },
+        ]
+      : [];
     const requestBody: Record<string, unknown> = {
       model: selectedModel,
       messages: research
-        ? [{ role: "system", content: RESEARCH_SYSTEM_PROMPT }, ...messages]
+        ? [{ role: "system", content: RESEARCH_SYSTEM_PROMPT }, ...turnMessages]
         : useWebTool
-          ? [{ role: "system", content: WEB_SEARCH_SYSTEM_PROMPT }, ...messages]
-          : messages,
-      ...(useWebTool
-        ? {
-            tools: [
-              {
-                type: "openrouter:web_search",
-                parameters: { engine: "auto", max_results: 5 },
-              },
-            ],
-          }
+          ? [{ role: "system", content: WEB_SEARCH_SYSTEM_PROMPT }, ...turnMessages]
+          : turnMessages,
+      ...(webTools.length > 0 || canvaTools.length > 0
+        ? { tools: [...webTools, ...canvaTools], tool_choice: "auto" }
         : {}),
       stream: true,
     };
@@ -177,7 +204,8 @@ export const streamOpenRouterCompletion = async (
       console.error("OpenRouter Error:", errorText);
       await prisma.message.update({ where: { id: assistantMessageId }, data: { status: "ERROR", error: errorText } });
       sendEvent("error", { code: "OPENROUTER_ERROR", message: `OpenRouter error: ${errorText}` });
-      return safeEnd();
+      safeEnd();
+      return { usage: null, toolCalls: [], terminal: true };
     }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -215,6 +243,20 @@ export const streamOpenRouterCompletion = async (
             assistantReasoning += reasoning;
             sendEvent("reasoning", { delta: reasoning });
           }
+          // Connector tool calls (Canva): accumulate index-keyed deltas so
+          // the turn below can execute them and stream the final answer.
+          const toolCallDeltas = parsed.choices?.[0]?.delta?.tool_calls;
+          if (Array.isArray(toolCallDeltas)) {
+            for (const tc of toolCallDeltas) {
+              const idx = typeof tc?.index === "number" ? tc.index : 0;
+              if (!pending[idx]) pending[idx] = { id: "", name: "", arguments: "" };
+              if (typeof tc?.id === "string") pending[idx].id += tc.id;
+              if (typeof tc?.function?.name === "string") pending[idx].name += tc.function.name;
+              if (typeof tc?.function?.arguments === "string") {
+                pending[idx].arguments += tc.function.arguments;
+              }
+            }
+          }
           if (parsed.usage) usage = parsed.usage;
         } catch {
           // ignore malformed chunks
@@ -232,6 +274,81 @@ export const streamOpenRouterCompletion = async (
           data: { content: assistantContent, reasoning: allowReasoning ? assistantReasoning || null : null },
         });
       }
+    }
+    return { usage, toolCalls: pending, terminal: false };
+  };
+
+  try {
+    let turnMessages = messages;
+    let usage: any = null;
+    // At most one tool round-trip: turn 0 may request connector calls, turn
+    // 1 streams the final answer with their results in context. When no
+    // tools are connected this loop runs exactly once, as before.
+    for (let turn = 0; ; turn += 1) {
+      const result = await runTurn(turnMessages);
+      if (result.terminal) return;
+      usage = result.usage ?? usage;
+      const requested = result.toolCalls.filter((c) => c.name);
+      if (canvaTools.length === 0 || requested.length === 0 || turn >= 1 || !canvaUserId) {
+        break;
+      }
+      const uid = canvaUserId;
+      // Live phase for the client status line; unknown to older clients,
+      // which safely ignore unrecognized SSE event types.
+      sendEvent("tools", { names: requested.map((c) => c.name) });
+      const toolResults: Array<{ id: string; text: string }> = [];
+      for (const tc of requested) {
+        let parsedArgs: Record<string, unknown> = {};
+        try {
+          const raw = tc.arguments.trim() ? JSON.parse(tc.arguments) : {};
+          parsedArgs = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+        } catch {
+          toolResults.push({
+            id: tc.id,
+            text: "Error: the model produced invalid JSON arguments and they were rejected.",
+          });
+          continue;
+        }
+        try {
+          toolResults.push({ id: tc.id, text: await executeMcpTool(uid, tc.name, parsedArgs) });
+        } catch (err: any) {
+          toolResults.push({ id: tc.id, text: `Error: ${err?.message || "tool execution failed"}` });
+        }
+      }
+      if (controller.signal.aborted) {
+        await prisma.message.update({
+          where: { id: assistantMessageId },
+          data: {
+            content: assistantContent,
+            reasoning: allowReasoning ? assistantReasoning || null : null,
+            status: "COMPLETE",
+            model: selectedModel,
+          },
+        });
+        await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+        return safeEnd();
+      }
+      // The final answer streams fresh in the next turn.
+      assistantContent = "";
+      assistantReasoning = "";
+      lastPersistedLength = 0;
+      turnMessages = [
+        ...turnMessages,
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: requested.map((tc) => ({
+            id: tc.id,
+            type: "function",
+            function: { name: tc.name, arguments: tc.arguments },
+          })),
+        },
+        ...toolResults.map((r) => ({
+          role: "tool",
+          tool_call_id: r.id,
+          content: r.text,
+        })),
+      ] as unknown as OpenRouterMessage[];
     }
     await prisma.message.update({
       where: { id: assistantMessageId },

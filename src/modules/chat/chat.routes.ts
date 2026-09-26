@@ -20,6 +20,8 @@ import {
   type OpenRouterMessage,
 } from "./chat.service";
 import { buildHistoryMessages } from "./history";
+import { parseByokHeaders } from "../../lib/byok";
+import { streamByokCompletion } from "./byok";
 
 const router = Router();
 
@@ -56,14 +58,30 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     });
   }
 
-  const resolvedModel = await resolveModelForRole(req.user!.role, model);
-  if (!resolvedModel.ok) {
-    return res.status(resolvedModel.status).json({
+  // BYOK (bring-your-own-key): x-byok-* headers mean this chat turn runs on the
+  // user's own provider key (stored only in their browser) instead of the
+  // server-configured OpenRouter key. Absent headers = unchanged OpenRouter path.
+  const byok = parseByokHeaders(req);
+  if (byok && "error" in byok) {
+    return res.status(400).json({
       success: false,
-      error: { code: resolvedModel.code, message: resolvedModel.message },
+      error: { code: "BYOK_INVALID", message: byok.error },
     });
   }
-  const selectedModel = resolvedModel.model;
+
+  let selectedModel: string;
+  if (byok) {
+    selectedModel = `${byok.provider.id}:${byok.model}`;
+  } else {
+    const resolvedModel = await resolveModelForRole(req.user!.role, model);
+    if (!resolvedModel.ok) {
+      return res.status(resolvedModel.status).json({
+        success: false,
+        error: { code: resolvedModel.code, message: resolvedModel.message },
+      });
+    }
+    selectedModel = resolvedModel.model;
+  }
 
   let userMsgContent = userMessage || "";
   let userImages: string[] = Array.isArray(images) ? images : [];
@@ -108,6 +126,53 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   const assistantMsg = await prisma.message.create({
     data: { conversationId, role: "ASSISTANT", content: "", status: "STREAMING" },
   });
+
+  // Artifact turn: explicit client flag OR keyword auto-detect.
+  // Applies to retries too so an edited simulation prompt keeps streaming
+  // with the artifact system prompt instead of degrading to plain chat.
+  const isArtifactTurn =
+    artifact === true || wantsArtifact(userMsgContent);
+
+  // Brand-aware artifact prompt: load the user's brand, fallback "default",
+  // tolerate missing row/column (older DBs without UserSettings.brand).
+  let artifactBrand = "default";
+  if (isArtifactTurn) {
+    try {
+      const settings = await prisma.userSettings.findUnique({
+        where: { userId: req.user!.id },
+        select: { brand: true },
+      });
+      const raw = (settings as { brand?: unknown } | null)?.brand;
+      if (typeof raw === "string" && raw.trim()) artifactBrand = raw.trim().toLowerCase();
+    } catch {
+      artifactBrand = "default";
+    }
+  }
+  const effectiveSystemPrompt = isArtifactTurn
+    ? buildArtifactPrompt(artifactBrand, systemPrompt)
+    : systemPrompt;
+
+  // BYOK turn: plain-text chat streamed from the user's own provider key.
+  // Quiz/image/video/web-search/research turns remain OpenRouter-driven and
+  // are skipped here; nothing below changes when BYOK headers are absent.
+  if (byok) {
+    const { messages, stats } = buildHistoryMessages(history, {
+      systemPrompt: effectiveSystemPrompt,
+      existingUserMessageId,
+    });
+    console.log(
+      `Sending messages to ${byok.provider.name} (BYOK, model=${byok.model}):`,
+      JSON.stringify(redactForLog(messages as OpenRouterMessage[]), null, 2),
+      "historyStats:",
+      JSON.stringify(stats),
+    );
+    return streamByokCompletion(req, res, {
+      assistantMessageId: assistantMsg.id,
+      conversationId,
+      messages: messages as OpenRouterMessage[],
+      byok,
+    });
+  }
 
   // MCQ quiz turn: `mcq <topic>` generates 10 MCQs as a quiz event (no stream).
   // Must run BEFORE the image branch so `mcq ...` never triggers image intent.
@@ -172,34 +237,11 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     } as any);
   }
 
-  // Artifact turn: explicit client flag OR keyword auto-detect.
-  // Applies to retries too so an edited simulation prompt keeps streaming
-  // with the artifact system prompt instead of degrading to plain chat.
-  // Continues the NORMAL streaming path — no special events, no new SSE type.
-  const isArtifactTurn =
-    artifact === true || wantsArtifact(userMsgContent);
-
-  // Brand-aware artifact prompt: load the user's brand, fallback "default",
-  // tolerate missing row/column (older DBs without UserSettings.brand).
-  let artifactBrand = "default";
-  if (isArtifactTurn) {
-    try {
-      const settings = await prisma.userSettings.findUnique({
-        where: { userId: req.user!.id },
-        select: { brand: true },
-      });
-      const raw = (settings as { brand?: unknown } | null)?.brand;
-      if (typeof raw === "string" && raw.trim()) artifactBrand = raw.trim().toLowerCase();
-    } catch {
-      artifactBrand = "default";
-    }
-  }
+  // Artifact turns continue the NORMAL streaming path below — no special
+  // events, no new SSE type.
 
   // Token-budgeted history (payload only — DB untouched). Rebuilt from DB every
   // turn so memory survives model switches; retry slices to existingUserMessageId.
-  const effectiveSystemPrompt = isArtifactTurn
-    ? buildArtifactPrompt(artifactBrand, systemPrompt)
-    : systemPrompt;
   const { messages, stats } = buildHistoryMessages(history, {
     systemPrompt: effectiveSystemPrompt,
     existingUserMessageId,
@@ -218,6 +260,9 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     selectedModel,
     research: research === true,
     webSearch: webSearch === true,
+    // Connector tools (Canva): resolved best-effort inside the streamer.
+    // Disconnected users get [] and byte-identical behavior to before.
+    canvaUserId: req.user!.id,
   });
 });
 
