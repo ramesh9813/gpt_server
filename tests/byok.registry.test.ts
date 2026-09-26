@@ -57,8 +57,12 @@ describe("byok provider registry", () => {
     expect(isByokKeyFormatSupported(openrouter, "sk-" + "a".repeat(48))).toBe(false);
 
     const google = getByokProvider("google")!;
+    // Legacy AIza… keys:
     expect(isByokKeyFormatSupported(google, "AIzaSy" + "b".repeat(33))).toBe(true);
-    expect(isByokKeyFormatSupported(google, "sk-" + "a".repeat(48))).toBe(false);
+    // New AI Studio keys (dot-containing, e.g. "AQ.…"):
+    expect(isByokKeyFormatSupported(google, "AQ.Ab8RN6LN5caAL0vB" + "x".repeat(10))).toBe(true);
+    // Too-short junk is still rejected:
+    expect(isByokKeyFormatSupported(google, "nope")).toBe(false);
 
     const grok = getByokProvider("grok")!;
     expect(isByokKeyFormatSupported(grok, "xai-" + "c".repeat(80))).toBe(true);

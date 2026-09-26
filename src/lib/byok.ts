@@ -89,8 +89,10 @@ export const BYOK_PROVIDERS: Record<ByokProviderId, ByokProvider> = {
     name: "Google Gemini",
     kind: "gemini",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-    keyPattern: /^AIza[A-Za-z0-9_-]{30,}$/,
-    keyHint: "AIza...",
+    // Google issues legacy "AIza…" keys AND newer dot-containing keys
+    // (e.g. "AQ.…") from the revamped AI Studio. Accept both.
+    keyPattern: /^(AIza[A-Za-z0-9_-]{20,}|[A-Za-z0-9][A-Za-z0-9_.-]{24,})$/,
+    keyHint: "AIza... or AQ....",
     keylessModels: false,
     models: [
       "gemini-2.5-flash",
