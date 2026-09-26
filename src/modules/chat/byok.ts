@@ -129,9 +129,10 @@ export const streamByokCompletion = async (
     messages: OpenRouterMessage[];
     byok: ByokRequest;
     think?: boolean;
+    webSearch?: boolean;
   }
 ) => {
-  const { assistantMessageId, conversationId, messages, byok, think } = opts;
+  const { assistantMessageId, conversationId, messages, byok, think, webSearch } = opts;
   const { provider, model, apiKey } = byok;
   const storedModel = `${provider.id}:${model}`;
   const startedAt = Date.now();
@@ -158,6 +159,16 @@ export const streamByokCompletion = async (
   let assistantReasoning = "";
   let lastPersistedLength = 0;
   let lastPersistedAt = Date.now();
+  // Web-search citations (OpenRouter url_citation annotations) + one-shot
+  // notice when the user's provider can't run web search at all.
+  const sourceMap = new Map<string, { title: string; url: string }>();
+  const webSearchSupported = provider.id === "openrouter";
+  if (webSearch === true && !webSearchSupported) {
+    sendEvent("notice", {
+      message:
+        "Web search isn't available with your provider key — answering from general knowledge.",
+    });
+  }
 
   const persistProgress = async () => {
     await prisma.message.update({
@@ -245,6 +256,14 @@ export const streamByokCompletion = async (
         model,
         messages,
         stream: true,
+        // Web search via an OpenRouter BYOK key uses the same native tool as
+        // the built-in path.
+        ...(webSearch === true && provider.id === "openrouter"
+          ? {
+              tools: [{ type: "openrouter:web_search", parameters: { engine: "auto", max_results: 5 } }],
+              tool_choice: "auto",
+            }
+          : {}),
       };
       // OpenAI-compatible usage chunk: supported by OpenAI/xAI/NVIDIA/
       // OpenRouter. Meta's compat layer is stricter, so only opt in where
@@ -361,6 +380,19 @@ export const streamByokCompletion = async (
               };
             }
           } else {
+            // OpenRouter web_search citations arrive as url_citation annotations.
+            const anns = parsed.choices?.[0]?.delta?.annotations;
+            if (Array.isArray(anns)) {
+              for (const a of anns) {
+                const c = a?.url_citation;
+                if (c && typeof c.url === "string" && c.url) {
+                  sourceMap.set(c.url, {
+                    url: c.url,
+                    title: typeof c.title === "string" && c.title ? c.title : c.url,
+                  });
+                }
+              }
+            }
             const delta = parsed.choices?.[0]?.delta?.content;
             if (typeof delta === "string" && delta.length > 0) {
               assistantContent += delta;
@@ -393,6 +425,7 @@ export const streamByokCompletion = async (
       }
     }
 
+    const sources = [...sourceMap.values()];
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: {
@@ -404,12 +437,16 @@ export const streamByokCompletion = async (
         completionTokens: usage?.completion_tokens,
         tokenCount: usage?.total_tokens,
         durationMs: Date.now() - startedAt,
+        ...(sources.length > 0 ? { usedSearch: true, sources } : {}),
       },
     });
     await prisma.conversation.update({
       where: { id: conversationId },
       data: { updatedAt: new Date() },
     });
+    if (sources.length > 0) {
+      sendEvent("sources", { messageId: assistantMessageId, sources });
+    }
     sendEvent("done", {
       messageId: assistantMessageId,
       usage: usage || {},

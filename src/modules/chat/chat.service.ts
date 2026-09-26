@@ -137,6 +137,23 @@ export const streamOpenRouterCompletion = async (
   let assistantReasoning = "";
   let lastPersistedLength = 0;
   let lastPersistedAt = Date.now();
+  // Web-search citations collected from the provider stream (url_citation
+  // annotations), plus a user-facing notice when search couldn't run.
+  const sourceMap = new Map<string, { title: string; url: string }>();
+  let searchNotice: string | null = null;
+  const collectAnnotations = (chunk: any) => {
+    const anns = chunk?.choices?.[0]?.delta?.annotations;
+    if (!Array.isArray(anns)) return;
+    for (const a of anns) {
+      const c = a?.url_citation;
+      if (c && typeof c.url === "string" && c.url) {
+        sourceMap.set(c.url, {
+          url: c.url,
+          title: typeof c.title === "string" && c.title ? c.title : c.url,
+        });
+      }
+    }
+  };
   // Connector tools (Canva, OpenAI function-calling schema). Best-effort:
   // [] when disconnected/unconfigured, so the streaming path below is
   // untouched for everyone else. Skipped for deep-research turns (those
@@ -191,7 +208,7 @@ export const streamOpenRouterCompletion = async (
       // the stream stays open until the model finishes or the client drops).
       requestBody.include_reasoning = true;
     }
-    const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+    let response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
@@ -202,6 +219,34 @@ export const streamOpenRouterCompletion = async (
       body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
+    // Web-search edge case: the selected model may reject tool calling
+    // entirely. Retry once WITHOUT the web tool and tell the client to note
+    // "search unavailable, answering from general knowledge".
+    if (!response.ok && useWebTool) {
+      console.error("OpenRouter web-search turn failed, retrying without tools:", response.status);
+      searchNotice =
+        "Web search isn't available for the selected model — answering from general knowledge.";
+      const fallbackBody: Record<string, unknown> = {
+        model: selectedModel,
+        messages: [
+          { role: "system", content: WEB_SEARCH_SYSTEM_PROMPT },
+          ...turnMessages,
+        ],
+        stream: true,
+        ...(canvaTools.length > 0 ? { tools: canvaTools, tool_choice: "auto" } : {}),
+      };
+      response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": env.APP_ORIGIN,
+          "X-Title": "ChatUI",
+        },
+        body: JSON.stringify(fallbackBody),
+        signal: controller.signal,
+      });
+    }
     console.log("OpenRouter Response Status:", response.status, response.statusText);
     if (!response.ok || !response.body) {
       const errorText = await response.text();
@@ -232,6 +277,7 @@ export const streamOpenRouterCompletion = async (
         }
         try {
           const parsed = JSON.parse(data);
+          collectAnnotations(parsed);
           const delta = parsed.choices?.[0]?.delta?.content;
           if (typeof delta === "string" && delta.length > 0) {
             assistantContent += delta;
@@ -355,6 +401,7 @@ export const streamOpenRouterCompletion = async (
         })),
       ] as unknown as OpenRouterMessage[];
     }
+    const sources = [...sourceMap.values()];
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: {
@@ -366,9 +413,19 @@ export const streamOpenRouterCompletion = async (
         completionTokens: usage?.completion_tokens,
         tokenCount: usage?.total_tokens,
         durationMs: Date.now() - startedAt,
+        ...(sources.length > 0
+          ? { usedSearch: true, sources }
+          : { usedSearch: false }),
       },
     });
     await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+    if (sources.length > 0) {
+      sendEvent("sources", { messageId: assistantMessageId, sources });
+    }
+    if (searchNotice) {
+      // system_notice style event: render as a dismissible inline banner.
+      sendEvent("notice", { message: searchNotice });
+    }
     sendEvent("done", { messageId: assistantMessageId, usage: usage || {}, durationMs: Date.now() - startedAt });
     // Best-effort follow-up questions (never fails the stream).
     try {

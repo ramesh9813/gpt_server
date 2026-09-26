@@ -30,6 +30,7 @@ const envSchema = z.object({
   WANDBOX_BASE_URL: z.string().default("https://wandbox.org"),
   RUNNER_TIMEOUT_MS: z.string().optional(),
   OWNER_EMAILS: z.string().default("rameshsingh9813@gmail.com"),
+  ADMIN_EMAILS: z.string().default("rameshkumarmahato970@gmail.com"),
   // --- Canva connector (MCP client) ---
   CANVA_CLIENT_ID: z.string().default(""),
   CANVA_CLIENT_SECRET: z.string().default(""),
@@ -48,6 +49,12 @@ export const env = envSchema.parse(normalizedEnv);
 
 export const ownerEmails: Set<string> = new Set(
   env.OWNER_EMAILS.split(",")
+    .map((e: string) => e.trim().toLowerCase())
+    .filter(Boolean)
+);
+
+export const adminEmails: Set<string> = new Set(
+  env.ADMIN_EMAILS.split(",")
     .map((e: string) => e.trim().toLowerCase())
     .filter(Boolean)
 );

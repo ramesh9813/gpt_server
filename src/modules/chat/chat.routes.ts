@@ -71,6 +71,19 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     });
   }
 
+  // Built-in (server-key) models are reserved for owner/admin. General users
+  // chat by bringing their own provider key (Account → Settings → AI provider).
+  if (!byok && req.user!.role !== "owner" && req.user!.role !== "admin") {
+    return res.status(403).json({
+      success: false,
+      error: {
+        code: "BYOK_REQUIRED",
+        message:
+          "Built-in models are available on owner/admin accounts. Add your own API key in Account → Settings → AI provider to chat as much as you want with any provider.",
+      },
+    });
+  }
+
   let selectedModel: string;
   if (byok) {
     selectedModel = `${byok.provider.id}:${byok.model}`;
@@ -210,6 +223,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       messages: messages as OpenRouterMessage[],
       byok,
       think: think === true,
+      webSearch: webSearch === true,
     });
   }
 

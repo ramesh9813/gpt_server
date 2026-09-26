@@ -63,9 +63,16 @@ export const signupHandler = async (req: Request, res: Response, next: NextFunct
       return res.status(409).json({ success: false, error: { code: "EMAIL_EXISTS", message: "Email already in use" } });
     }
     const passwordHash = await hashPassword(password);
-    const { isOwnerEmail } = await import("../../lib/userRoles");
+    const { emailPinnedRole } = await import("../../lib/userRoles");
+    const pinned = emailPinnedRole(email);
     const user = await prisma.user.create({
-      data: { email, passwordHash, name, ...(isOwnerEmail(email) ? { role: "owner" as const } : {}), settings: { create: {} } },
+      data: {
+        email,
+        passwordHash,
+        name,
+        ...(pinned ? { role: pinned } : {}),
+        settings: { create: {} },
+      },
     });
     const normalizedRole = effectiveRole(user.email, user.role);
     const accessToken = signAccessToken({ sub: user.id, role: normalizedRole });
@@ -103,9 +110,10 @@ export const loginHandler = async (req: Request, res: Response, next: NextFuncti
     await prisma.refreshToken.create({
       data: { userId: user.id, tokenHash: hashToken(refreshToken), expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
     });
+    // Sync the stored role with an env-pinned role (owner/admin emails).
     await prisma.user.update({
       where: { id: user.id },
-      data: { lastLoginAt: new Date(), ...(normalizedRole === "owner" && user.role !== "owner" ? { role: "owner" as const } : {}) },
+      data: { lastLoginAt: new Date(), ...(normalizedRole !== user.role ? { role: normalizedRole } : {}) },
     });
     setAuthCookies(req, res, accessToken, refreshToken, csrfToken);
     return res.json({
@@ -145,15 +153,20 @@ export const googleHandler = async (req: Request, res: Response, next: NextFunct
     const email = decoded.email.toLowerCase();
     const randomPassword = crypto.randomBytes(32).toString("hex");
     const passwordHash = await hashPassword(randomPassword);
-    const { isOwnerEmail: isOwner } = await import("../../lib/userRoles");
+    const { emailPinnedRole } = await import("../../lib/userRoles");
+    const pinned = emailPinnedRole(email);
     const user = await prisma.user.upsert({
       where: { email },
-      update: { lastLoginAt: new Date(), name: decoded.name || undefined, ...(isOwner(email) ? { role: "owner" as const } : {}) },
+      update: {
+        lastLoginAt: new Date(),
+        name: decoded.name || undefined,
+        ...(pinned ? { role: pinned } : {}),
+      },
       create: {
         email,
         passwordHash,
         name: decoded.name || null,
-        ...(isOwner(email) ? { role: "owner" as const } : {}),
+        ...(pinned ? { role: pinned } : {}),
         settings: { create: {} },
       },
     });
@@ -202,8 +215,9 @@ export const refreshHandler = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, error: { code: "UNAUTHORIZED", message: "User not found" } });
     }
     const normalizedRole = effectiveRole(dbUser.email, dbUser.role);
-    if (normalizedRole === "owner" && dbUser.role !== "owner") {
-      await prisma.user.update({ where: { id: dbUser.id }, data: { role: "owner" as const } });
+    // Re-sync an env-pinned role (owner/admin emails) into the DB on refresh.
+    if (normalizedRole !== dbUser.role) {
+      await prisma.user.update({ where: { id: dbUser.id }, data: { role: normalizedRole } });
     }
     const stored = await prisma.refreshToken.findFirst({
       where: { tokenHash: hashToken(refreshToken), revokedAt: null, expiresAt: { gt: new Date() } },

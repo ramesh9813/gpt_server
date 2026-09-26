@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma";
-import { normalizeUserRole } from "../../lib/userRoles";
+import { effectiveRole } from "../../lib/userRoles";
 import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 
@@ -40,7 +40,7 @@ router.get("/", requireAuth, async (req, res) => {
       user: user
         ? {
             ...user,
-            role: normalizeUserRole(user.role)
+            role: effectiveRole(user.email, user.role)
           }
         : null
     }

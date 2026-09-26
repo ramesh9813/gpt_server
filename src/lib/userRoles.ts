@@ -1,4 +1,4 @@
-import { ownerEmails } from "./config";
+import { ownerEmails, adminEmails } from "./config";
 
 export type UserRole = "admin" | "owner" | "user";
 
@@ -21,11 +21,25 @@ export const isOwnerEmail = (email: string | null | undefined): boolean => {
   return ownerEmails.has(email.trim().toLowerCase());
 };
 
-// Owner emails always resolve to owner, even if the stored DB role is stale.
+export const isAdminEmail = (email: string | null | undefined): boolean => {
+  if (!email) return false;
+  return adminEmails.has(email.trim().toLowerCase());
+};
+
+// The role an email address is pinned to via env lists, if any.
+export const emailPinnedRole = (
+  email: string | null | undefined
+): UserRole | null => {
+  if (isOwnerEmail(email)) return "owner";
+  if (isAdminEmail(email)) return "admin";
+  return null;
+};
+
+// Owner/admin emails always resolve to their pinned role, even if the stored
+// DB role is stale. Everyone else is whatever their stored role says.
 export const effectiveRole = (
   email: string | null | undefined,
   storedRole: string | null | undefined
 ): UserRole => {
-  if (isOwnerEmail(email)) return "owner";
-  return normalizeUserRole(storedRole);
+  return emailPinnedRole(email) ?? normalizeUserRole(storedRole);
 };

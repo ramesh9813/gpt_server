@@ -18,6 +18,7 @@ import modelRoutes from "./modules/models/models.routes";
 import runnerRoutes from "./modules/runner/runner.routes";
 import connectorRoutes from "./modules/connectors/connectors.routes";
 import byokRoutes from "./modules/byok/byok.routes";
+import adminRoutes from "./modules/admin/admin.routes";
 
 const app = express();
 
@@ -74,6 +75,10 @@ const byokLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 30
 });
+const adminLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60
+});
 
 app.get("/", (_req, res) => {
   res.json({ success: true, message: "ChatGPT API Server is running" });
@@ -97,6 +102,7 @@ app.use("/api/models", modelRoutes);
 app.use("/api/runner", runnerLimiter, runnerRoutes);
 app.use("/api/connectors", connectorRoutes);
 app.use("/api/byok", byokLimiter, byokRoutes);
+app.use("/api/admin", adminLimiter, adminRoutes);
 
 app.use(errorHandler);
 
