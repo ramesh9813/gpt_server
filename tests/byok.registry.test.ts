@@ -6,14 +6,20 @@ import {
 } from "../src/lib/byok";
 
 describe("byok provider registry", () => {
-  it("exposes all six providers", () => {
+  it("exposes all twelve providers", () => {
     expect(Object.keys(BYOK_PROVIDERS).sort()).toEqual([
+      "anthropic",
+      "deepseek",
       "google",
       "grok",
+      "groq",
       "meta",
+      "mistral",
+      "moonshot",
       "nvidia",
       "openai",
       "openrouter",
+      "qwen",
     ]);
   });
 
@@ -32,6 +38,12 @@ describe("byok provider registry", () => {
     expect(BYOK_PROVIDERS.google.keylessModels).toBe(false);
     expect(BYOK_PROVIDERS.grok.keylessModels).toBe(false);
     expect(BYOK_PROVIDERS.meta.keylessModels).toBe(false);
+    expect(BYOK_PROVIDERS.deepseek.keylessModels).toBe(false);
+    expect(BYOK_PROVIDERS.qwen.keylessModels).toBe(false);
+    expect(BYOK_PROVIDERS.moonshot.keylessModels).toBe(false);
+    expect(BYOK_PROVIDERS.groq.keylessModels).toBe(false);
+    expect(BYOK_PROVIDERS.mistral.keylessModels).toBe(false);
+    expect(BYOK_PROVIDERS.anthropic.keylessModels).toBe(false);
   });
 
   it("checks key formats per provider", () => {
@@ -57,5 +69,25 @@ describe("byok provider registry", () => {
 
     const meta = getByokProvider("meta")!;
     expect(isByokKeyFormatSupported(meta, "LLM|1234567890|abcdef")).toBe(true);
+
+    const deepseek = getByokProvider("deepseek")!;
+    expect(isByokKeyFormatSupported(deepseek, "sk-" + "e".repeat(32))).toBe(true);
+
+    const qwen = getByokProvider("qwen")!;
+    expect(isByokKeyFormatSupported(qwen, "sk-" + "f".repeat(32))).toBe(true);
+
+    const moonshot = getByokProvider("moonshot")!;
+    expect(isByokKeyFormatSupported(moonshot, "sk-" + "g".repeat(40))).toBe(true);
+
+    const groq = getByokProvider("groq")!;
+    expect(isByokKeyFormatSupported(groq, "gsk_" + "h".repeat(52))).toBe(true);
+    expect(isByokKeyFormatSupported(groq, "xai-" + "c".repeat(80))).toBe(false);
+
+    const mistral = getByokProvider("mistral")!;
+    expect(isByokKeyFormatSupported(mistral, "j".repeat(32))).toBe(true);
+
+    const anthropic = getByokProvider("anthropic")!;
+    expect(isByokKeyFormatSupported(anthropic, "sk-ant-" + "k".repeat(40))).toBe(true);
+    expect(isByokKeyFormatSupported(anthropic, "sk-" + "a".repeat(48))).toBe(false);
   });
 });

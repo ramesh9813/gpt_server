@@ -18,8 +18,14 @@ export type ByokProviderId =
   | "google"
   | "grok"
   | "meta"
-  | "nvidia";
-export type ByokApiKind = "openai" | "gemini";
+  | "nvidia"
+  | "deepseek"
+  | "qwen"
+  | "moonshot"
+  | "groq"
+  | "mistral"
+  | "anthropic";
+export type ByokApiKind = "openai" | "gemini" | "anthropic";
 
 export type ByokProvider = {
   id: ByokProviderId;
@@ -134,6 +140,89 @@ export const BYOK_PROVIDERS: Record<ByokProviderId, ByokProvider> = {
       "qwen/qwen3-235b-a22b",
     ],
   },
+  deepseek: {
+    id: "deepseek",
+    name: "DeepSeek",
+    kind: "openai",
+    baseUrl: "https://api.deepseek.com",
+    keyPattern: /^sk-[A-Za-z0-9]{20,}$/,
+    keyHint: "sk-...",
+    keylessModels: false,
+    models: ["deepseek-chat", "deepseek-reasoner"],
+  },
+  qwen: {
+    id: "qwen",
+    name: "Qwen (Alibaba)",
+    kind: "openai",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    keyPattern: /^sk-[A-Za-z0-9]{20,}$/,
+    keyHint: "sk-...",
+    keylessModels: false,
+    models: [
+      "qwen-max",
+      "qwen-plus",
+      "qwen-turbo",
+      "qwen3-235b-a22b",
+      "qwen3-30b-a3b",
+    ],
+  },
+  moonshot: {
+    id: "moonshot",
+    name: "Moonshot (Kimi)",
+    kind: "openai",
+    baseUrl: "https://api.moonshot.ai/v1",
+    keyPattern: /^sk-[A-Za-z0-9]{20,}$/,
+    keyHint: "sk-...",
+    keylessModels: false,
+    models: [
+      "kimi-k2-0711-preview",
+      "kimi-latest",
+      "moonshot-v1-8k",
+      "moonshot-v1-32k",
+      "moonshot-v1-128k",
+    ],
+  },
+  groq: {
+    id: "groq",
+    name: "Groq",
+    kind: "openai",
+    baseUrl: "https://api.groq.com/openai/v1",
+    keyPattern: /^gsk_[A-Za-z0-9]{20,}$/,
+    keyHint: "gsk_...",
+    keylessModels: false,
+    models: [
+      "llama-3.3-70b-versatile",
+      "llama-3.1-8b-instant",
+      "qwen-qwq-32b",
+      "deepseek-r1-distill-llama-70b",
+    ],
+  },
+  mistral: {
+    id: "mistral",
+    name: "Mistral AI",
+    kind: "openai",
+    baseUrl: "https://api.mistral.ai/v1",
+    // Mistral keys are long alphanumeric tokens without a distinctive prefix.
+    keyPattern: /^[A-Za-z0-9]{30,}$/,
+    keyHint: "30+ character token",
+    keylessModels: false,
+    models: [
+      "mistral-large-latest",
+      "mistral-medium-latest",
+      "mistral-small-latest",
+      "codestral-latest",
+    ],
+  },
+  anthropic: {
+    id: "anthropic",
+    name: "Anthropic (Claude)",
+    kind: "anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    keyPattern: /^sk-ant-[A-Za-z0-9_-]{20,}$/,
+    keyHint: "sk-ant-...",
+    keylessModels: false,
+    models: ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"],
+  },
 };
 
 export const getByokProvider = (raw: unknown): ByokProvider | null => {
@@ -180,6 +269,29 @@ export const fetchByokModels = async (
   provider: ByokProvider,
   apiKey: string = ""
 ): Promise<string[]> => {
+  if (provider.kind === "anthropic") {
+    const response = await fetch(`${provider.baseUrl}/models`, {
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) {
+      const err = new Error(`provider returned ${response.status}`) as Error & {
+        status?: number;
+      };
+      err.status = response.status;
+      throw err;
+    }
+    const json = (await response.json()) as any;
+    const list: any[] = Array.isArray(json?.data) ? json.data : [];
+    return list
+      .map((m) => String(m?.id ?? ""))
+      .filter(Boolean)
+      .slice(0, 500);
+  }
+
   if (provider.kind === "gemini") {
     const response = await fetch(`${provider.baseUrl}/models?pageSize=500`, {
       headers: apiKey ? { "x-goog-api-key": apiKey } : {},

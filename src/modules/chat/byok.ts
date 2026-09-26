@@ -59,6 +59,64 @@ const toGeminiPayload = (messages: OpenRouterMessage[]) => {
   };
 };
 
+// ---- Anthropic (Messages API) request shaping --------------------------------
+
+type AnthropicPart =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+
+const toAnthropicPayload = (messages: OpenRouterMessage[]) => {
+  const sysParts: string[] = [];
+  const msgs: Array<{ role: "user" | "assistant"; content: AnthropicPart[] }> =
+    [];
+  for (const m of messages) {
+    if (m.role === "system") {
+      const text =
+        typeof m.content === "string"
+          ? m.content
+          : m.content
+              .filter((p) => p.type === "text")
+              .map((p) => (p as { text: string }).text)
+              .join("\n");
+      if (text.trim()) sysParts.push(text);
+      continue;
+    }
+    const role = m.role === "assistant" ? "assistant" : "user";
+    let parts: AnthropicPart[];
+    if (typeof m.content === "string") {
+      parts = [{ type: "text", text: m.content.trim() ? m.content : " " }];
+    } else {
+      parts = m.content
+        .map((p): AnthropicPart | null => {
+          if (p.type === "text")
+            return p.text.trim() ? { type: "text", text: p.text } : null;
+          const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/.exec(
+            p.image_url.url
+          );
+          return match
+            ? {
+                type: "image",
+                source: { type: "base64", media_type: match[1], data: match[2] },
+              }
+            : null;
+        })
+        .filter((p): p is AnthropicPart => p !== null);
+      if (parts.length === 0) parts = [{ type: "text", text: " " }];
+    }
+    // Anthropic requires strictly alternating user/assistant turns.
+    const last = msgs[msgs.length - 1];
+    if (last && last.role === role) {
+      last.content = [...last.content, ...parts];
+    } else {
+      msgs.push({ role, content: parts });
+    }
+  }
+  return {
+    ...(sysParts.length > 0 ? { system: sysParts.join("\n\n") } : {}),
+    messages: msgs,
+  };
+};
+
 // ---- entry point ------------------------------------------------------------
 
 export const streamByokCompletion = async (
@@ -126,7 +184,26 @@ export const streamByokCompletion = async (
 
   try {
     let response: globalThis.Response;
-    if (provider.kind === "gemini") {
+    if (provider.kind === "anthropic") {
+      const { system, messages: anthropicMessages } =
+        toAnthropicPayload(messages);
+      response = await fetch(`${provider.baseUrl}/messages`, {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 4096,
+          stream: true,
+          ...(system ? { system } : {}),
+          messages: anthropicMessages,
+        }),
+        signal: controller.signal,
+      });
+    } else if (provider.kind === "gemini") {
       response = await fetch(
         `${provider.baseUrl}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
         {
@@ -190,7 +267,33 @@ export const streamByokCompletion = async (
         }
         try {
           const parsed = JSON.parse(data);
-          if (provider.kind === "gemini") {
+          if (provider.kind === "anthropic") {
+            // Messages-API SSE: text lives in content_block_delta events; usage
+            // arrives via message_start (input) and message_delta (output).
+            const type = parsed?.type;
+            if (
+              type === "content_block_delta" &&
+              parsed.delta?.type === "text_delta" &&
+              typeof parsed.delta.text === "string" &&
+              parsed.delta.text.length > 0
+            ) {
+              assistantContent += parsed.delta.text;
+              sendEvent("token", { delta: parsed.delta.text });
+            }
+            if (type === "message_start" && parsed.message?.usage) {
+              usage = {
+                prompt_tokens: parsed.message.usage.input_tokens,
+              };
+            }
+            if (type === "message_delta" && parsed.usage) {
+              const completion = parsed.usage.output_tokens ?? 0;
+              usage = {
+                ...(usage ?? {}),
+                completion_tokens: completion,
+                total_tokens: (usage?.prompt_tokens ?? 0) + completion,
+              };
+            }
+          } else if (provider.kind === "gemini") {
             const parts = parsed?.candidates?.[0]?.content?.parts;
             if (Array.isArray(parts)) {
               for (const part of parts) {
