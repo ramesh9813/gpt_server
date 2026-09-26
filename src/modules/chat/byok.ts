@@ -145,9 +145,10 @@ export const streamByokCompletion = async (
         messages,
         stream: true,
       };
-      // OpenAI-compatible usage chunk: supported by OpenAI/xAI/NVIDIA. Meta's
-      // compat layer is stricter, so only opt in where documented.
-      if (provider.id === "openai" || provider.id === "grok" || provider.id === "nvidia") {
+      // OpenAI-compatible usage chunk: supported by OpenAI/xAI/NVIDIA/
+      // OpenRouter. Meta's compat layer is stricter, so only opt in where
+      // documented.
+      if (provider.id !== "meta") {
         body.stream_options = { include_usage: true };
       }
       response = await fetch(`${provider.baseUrl}/chat/completions`, {
@@ -155,6 +156,7 @@ export const streamByokCompletion = async (
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
+          ...(provider.chatHeaders ?? {}),
         },
         body: JSON.stringify(body),
         signal: controller.signal,

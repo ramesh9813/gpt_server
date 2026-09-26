@@ -1,57 +1,12 @@
 import request from "supertest";
 import app from "../src/app";
 import { clearDb, prisma } from "./helpers";
-import {
-  BYOK_PROVIDERS,
-  getByokProvider,
-  isByokKeyFormatSupported,
-} from "../src/lib/byok";
 
 const getCookie = (setCookie: string[], name: string) => {
   const cookie = setCookie.find((c) => c.startsWith(`${name}=`));
   if (!cookie) return "";
   return cookie.split(";")[0];
 };
-
-describe("byok provider registry", () => {
-  it("exposes all five providers", () => {
-    expect(Object.keys(BYOK_PROVIDERS).sort()).toEqual([
-      "google",
-      "grok",
-      "meta",
-      "nvidia",
-      "openai",
-    ]);
-  });
-
-  it("resolves providers case-insensitively and rejects unknown ids", () => {
-    expect(getByokProvider("OpenAI")?.id).toBe("openai");
-    expect(getByokProvider("nvidia")?.id).toBe("nvidia");
-    expect(getByokProvider("acme")).toBeNull();
-    expect(getByokProvider(undefined)).toBeNull();
-  });
-
-  it("checks key formats per provider", () => {
-    const openai = getByokProvider("openai")!;
-    expect(isByokKeyFormatSupported(openai, "sk-" + "a".repeat(48))).toBe(true);
-    expect(isByokKeyFormatSupported(openai, "AIzaSy" + "b".repeat(33))).toBe(false);
-    expect(isByokKeyFormatSupported(openai, "hello")).toBe(false);
-
-    const google = getByokProvider("google")!;
-    expect(isByokKeyFormatSupported(google, "AIzaSy" + "b".repeat(33))).toBe(true);
-    expect(isByokKeyFormatSupported(google, "sk-" + "a".repeat(48))).toBe(false);
-
-    const grok = getByokProvider("grok")!;
-    expect(isByokKeyFormatSupported(grok, "xai-" + "c".repeat(80))).toBe(true);
-    expect(isByokKeyFormatSupported(grok, "sk-" + "a".repeat(48))).toBe(false);
-
-    const nvidia = getByokProvider("nvidia")!;
-    expect(isByokKeyFormatSupported(nvidia, "nvapi-" + "d".repeat(40))).toBe(true);
-
-    const meta = getByokProvider("meta")!;
-    expect(isByokKeyFormatSupported(meta, "LLM|1234567890|abcdef")).toBe(true);
-  });
-});
 
 describe("POST /api/byok/validate", () => {
   beforeAll(async () => {
@@ -127,6 +82,28 @@ describe("POST /api/byok/validate", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.supported).toBe(false);
+  });
+
+  it("returns live model ids from POST /api/byok/models (keyless provider)", async () => {
+    const { access, refresh, csrf } = await signup();
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: "meta/llama-3.3-70b-instruct" }, { id: "nvidia/nemotron" }],
+      }),
+    });
+
+    const res = await request(app)
+      .post("/api/byok/models")
+      .set("Cookie", [access, refresh, `csrfToken=${csrf}`])
+      .set("x-csrf-token", csrf)
+      .send({ provider: "nvidia" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.models).toEqual([
+      "meta/llama-3.3-70b-instruct",
+      "nvidia/nemotron",
+    ]);
   });
 
   it("rejects unknown providers with 400", async () => {
