@@ -168,9 +168,27 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     : systemPrompt;
 
   // BYOK turn: plain-text chat streamed from the user's own provider key.
-  // Image/video/web-search/research turns remain OpenRouter-driven and are
-  // skipped here; nothing below changes when BYOK headers are absent.
+  // Image/video turns stay on built-in models (owner/admin only); general-key
+  // users get a plain-text hint instead. Nothing below changes when BYOK
+  // headers are absent.
   if (byok) {
+    const isGeneralUser = req.user!.role === "user";
+    if (isGeneralUser && (wantsVideo(userMsgContent) || isVideoOnlyModel(selectedModel))) {
+      return sendSimpleTextFinish(req, res, {
+        assistantMessageId: assistantMsg.id,
+        conversationId,
+        selectedModel,
+        text: "Video generation is available on owner/admin accounts only. Add an admin role or keep chatting with your own provider key.",
+      });
+    }
+    if (isGeneralUser && (wantsImageGeneration(userMsgContent) || isImageOnlyModel(selectedModel))) {
+      return sendSimpleTextFinish(req, res, {
+        assistantMessageId: assistantMsg.id,
+        conversationId,
+        selectedModel,
+        text: "Image generation is available on owner/admin accounts only. You can still chat with your own provider key.",
+      });
+    }
     // MCQ quiz turns work on BYOK providers too (same prompt + parsing applied
     // to the user's own model instead of the server default).
     if (wantsMcq(userMsgContent)) {

@@ -2,6 +2,9 @@ import { Router, Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
 import { prisma } from "../../lib/prisma";
 import { requireAuth } from "../../middleware/requireAuth";
+import { verifyAccessToken } from "../../lib/auth";
+import { normalizeUserRole } from "../../lib/userRoles";
+import { env } from "../../lib/config";
 import { isConnectorProvider } from "./tokenStore";
 import {
   canvaAuthorizeHandler,
@@ -30,7 +33,39 @@ const requireProvider = (req: Request, res: Response, next: NextFunction) => {
   return next();
 };
 
-router.get("/:provider/authorize", oauthLimiter, requireAuth, requireProvider, (req, res) =>
+// Top-level browser navigation (window.location.href) cannot send an
+// Authorization header and cross-origin cookies are often missing/blocked,
+// so plain requireAuth returns 401 JSON here. Accept the SPA's stored access
+// token via ?token= (or ?accessToken=) as a fallback, and redirect
+// unauthenticated hops to the login page instead of JSON.
+const requireAuthForAuthorize = (req: Request, res: Response, next: NextFunction) => {
+  const authHeader = req.headers.authorization;
+  const bearerToken =
+    authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const queryToken =
+    typeof req.query.token === "string" && req.query.token
+      ? req.query.token
+      : typeof req.query.accessToken === "string" && req.query.accessToken
+        ? req.query.accessToken
+        : null;
+  const token = bearerToken || req.cookies?.accessToken || queryToken;
+
+  const loginRedirect = () => {
+    const origin = env.APP_ORIGIN.split(",")[0]?.trim().replace(/\/+$/, "") || "";
+    return res.redirect(302, `${origin}/login?next=/account?connector=canva`);
+  };
+
+  if (!token) return loginRedirect();
+  try {
+    const payload = verifyAccessToken(token);
+    req.user = { id: payload.sub, role: normalizeUserRole(payload.role) };
+    return next();
+  } catch {
+    return loginRedirect();
+  }
+};
+
+router.get("/:provider/authorize", oauthLimiter, requireAuthForAuthorize, requireProvider, (req, res) =>
   canvaAuthorizeHandler(req, res)
 );
 
