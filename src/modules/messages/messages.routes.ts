@@ -36,11 +36,18 @@ const updateMessageSchema = z
   .object({
     content: z.string().min(1).max(8000).optional(),
     quiz: quizSchema.optional(),
+    images: imagesSchema,
     pruneFollowing: z.boolean().optional(),
   })
-  .refine((data) => data.content !== undefined || data.quiz !== undefined, {
-    message: "content or quiz is required",
-  });
+  .refine(
+    (data) =>
+      data.content !== undefined ||
+      data.quiz !== undefined ||
+      data.images !== undefined,
+    {
+      message: "content, quiz or images is required",
+    }
+  );
 
 router.get("/:id/messages", requireAuth, async (req, res) => {
   const conversation = await prisma.conversation.findFirst({
@@ -147,7 +154,8 @@ router.patch(
 
     const wantsContent = (req.body as { content?: unknown }).content !== undefined;
     const wantsQuiz = (req.body as { quiz?: unknown }).quiz !== undefined;
-    if (wantsContent && message.role !== "USER") {
+    const wantsImages = (req.body as { images?: unknown }).images !== undefined;
+    if ((wantsContent || wantsImages) && message.role !== "USER") {
       return res.status(404).json({
         success: false,
         error: { code: "NOT_FOUND", message: "Message not found" },
@@ -160,6 +168,10 @@ router.patch(
     }
     if (wantsQuiz) {
       data.quiz = (req.body as { quiz: Record<string, unknown> }).quiz;
+    }
+    if (wantsImages) {
+      // Image delete on edit: remaining images (possibly []) replace the row.
+      data.images = (req.body as { images: string[] }).images;
     }
 
     const updated = await (prisma.message.update as any)({
