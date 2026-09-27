@@ -104,16 +104,42 @@ export const streamOpenRouterCompletion = async (
       where: { id: assistantMessageId },
       data: { status: "ERROR", error: "OPENROUTER_API_KEY is not configured on the server." },
     });
-    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" });
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Content-Encoding": "none",
+      Pragma: "no-cache",
+    });
+    try {
+      (res as unknown as { flushHeaders?: () => void }).flushHeaders?.();
+    } catch {}
     res.write(`event: error\n`);
     res.write(`data: ${JSON.stringify({ code: "CONFIG_ERROR", message: "OPENROUTER_API_KEY is not configured on the server. Please set it in your Render environment variables." })}\n\n`);
     return res.end();
   }
-  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" });
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+    "Content-Encoding": "none",
+    Pragma: "no-cache",
+  });
+  try {
+    (res as unknown as { flushHeaders?: () => void }).flushHeaders?.();
+  } catch {}
+  try {
+    (res.socket as unknown as { setNoDelay?: (v: boolean) => void })?.setNoDelay?.(true);
+  } catch {}
   const sendEvent = (event: string, data: unknown) => {
     if (res.writableEnded || res.destroyed) return;
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
+    try {
+      (res as unknown as { flush?: () => void }).flush?.();
+    } catch {}
   };
   const safeEnd = () => {
     if (!res.writableEnded && !res.destroyed) res.end();

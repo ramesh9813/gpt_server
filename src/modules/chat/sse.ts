@@ -10,7 +10,20 @@ export type SseResponse = Response & {
 };
 
 export const sseHead = (res: Response): void => {
-  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" });
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+    "Content-Encoding": "none",
+    Pragma: "no-cache",
+  });
+  try {
+    (res as unknown as { flushHeaders?: () => void }).flushHeaders?.();
+  } catch {}
+  try {
+    (res.socket as unknown as { setNoDelay?: (v: boolean) => void })?.setNoDelay?.(true);
+  } catch {}
 };
 export const sseSend =
   (res: Response): ((event: string, data: unknown) => void) =>
@@ -19,6 +32,9 @@ export const sseSend =
     if (r.writableEnded || r.destroyed) return;
     r.write(`event: ${event}\n`);
     r.write(`data: ${JSON.stringify(data)}\n\n`);
+    try {
+      (r as unknown as { flush?: () => void }).flush?.();
+    } catch {}
   };
 export const sseEnd =
   (res: Response): (() => void) =>
