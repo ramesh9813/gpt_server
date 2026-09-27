@@ -2,7 +2,7 @@
 // in practice: strict gateways 422ing on stream_options, wrong endpoints for
 // Gemini/Anthropic, missing thinking/web-search wiring, wrong auth headers.
 import { BYOK_PROVIDERS, type ByokProviderId } from "../src/lib/byok";
-import { buildByokStreamRequest } from "../src/modules/chat/byokRequest";
+import { buildByokStreamRequest, byokErrorMessage } from "../src/modules/chat/byokRequest";
 import type { OpenRouterMessage } from "../src/modules/chat/chat.service";
 
 const MESSAGES: OpenRouterMessage[] = [
@@ -100,6 +100,27 @@ describe("buildByokStreamRequest per provider", () => {
     const thinking = buildByokStreamRequest(mk("anthropic"), MESSAGES, { think: true });
     expect(thinking.body.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
     expect(thinking.body.max_tokens).toBe(8192);
+  });
+
+  it("codecraft uses the official base URL without usage chunks", () => {
+    const req = buildByokStreamRequest(mk("codecraft"), MESSAGES);
+    expect(req.url).toBe("https://codecraftapi.com/v1/chat/completions");
+    expect(req.body.stream_options).toBeUndefined();
+    expect(req.headers.Authorization).toBe(`Bearer ${key}`);
+  });
+
+  it("maps provider statuses to actionable error text", () => {
+    expect(
+      byokErrorMessage("CodeCraft API", 401, "Invalid or revoked API key.")
+    ).toContain("Invalid or revoked API key.");
+    expect(byokErrorMessage("CodeCraft API", 402, "")).toContain("Out of balance");
+    expect(byokErrorMessage("CodeCraft API", 403, "")).toContain("scopes");
+    expect(byokErrorMessage("CodeCraft API", 404, "")).toContain("Unknown model");
+    // Raw provider detail is preserved, truncated to 500 chars.
+    expect(byokErrorMessage("CodeCraft API", 500, "boom")).toContain("boom");
+    expect(byokErrorMessage("CodeCraft API", 500, "x".repeat(600))).toHaveLength(
+      "CodeCraft API error (500): ".length + 500
+    );
   });
 
   it("anthropic message shaping merges consecutive same-role turns", () => {

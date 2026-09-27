@@ -6,7 +6,7 @@ import type { Request, Response } from "express";
 import { prisma } from "../../lib/prisma";
 import type { ByokRequest } from "../../lib/byok";
 import { generateByokFollowups } from "./followups";
-import { buildByokStreamRequest } from "./byokRequest";
+import { buildByokStreamRequest, byokErrorMessage } from "./byokRequest";
 import type { OpenRouterMessage } from "./chat.service";
 
 // ---- entry point ------------------------------------------------------------
@@ -90,7 +90,7 @@ export const streamByokCompletion = async (
   };
 
   const fail = async (status: number, errorText: string) => {
-    const message = `${provider.name} error (${status}): ${errorText.slice(0, 500)}`;
+    const message = byokErrorMessage(provider.name, status, errorText);
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: { status: "ERROR", error: message },

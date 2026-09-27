@@ -113,6 +113,31 @@ const toAnthropicPayload = (messages: OpenRouterMessage[]) => {
   };
 };
 
+// ---- provider error text (pure, unit-tested) ----------------------------------
+
+// Maps a provider HTTP status to the actionable cause. CodeCraft-style
+// gateways use 402 for empty balance, 403 for a key that lacks the needed
+// scope, 404 for an unknown model id. Raw detail is kept so nothing is
+// ever swallowed.
+export const byokErrorMessage = (
+  providerName: string,
+  status: number,
+  errorText: string
+): string => {
+  const cause =
+    status === 401
+      ? "Invalid or revoked API key."
+      : status === 402
+        ? "Out of balance — top up the provider account."
+        : status === 403
+          ? "Key lacks permission for this call (check the key's scopes in the provider dashboard)."
+          : status === 404
+            ? "Unknown model or endpoint — refresh the provider's model list and reselect."
+            : null;
+  const detail = errorText.slice(0, 500);
+  return `${providerName} error (${status}):${cause ? ` ${cause}` : ""}${detail ? ` ${detail}` : ""}`;
+};
+
 // ---- request building (pure, unit-tested per provider) -----------------------
 
 export const buildByokStreamRequest = (

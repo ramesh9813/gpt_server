@@ -67,6 +67,17 @@ router.post(
       });
     } catch (err: any) {
       const status = err?.status;
+      if (status === 402) {
+        return res.json({
+          success: true,
+          data: {
+            supported: true,
+            verified: false,
+            models: [],
+            message: `${provider.name} accepted the key but the account is out of balance.`,
+          },
+        });
+      }
       if (status === 401 || status === 403) {
         return res.json({
           success: true,
@@ -74,7 +85,10 @@ router.post(
             supported: false,
             verified: false,
             models: [],
-            message: `${provider.name} rejected this key.`,
+            message:
+              status === 403
+                ? `${provider.name} rejected this key or the key lacks the models permission (check its scopes).`
+                : `${provider.name} rejected this key.`,
           },
         });
       }
@@ -137,7 +151,26 @@ router.post(
       if (status === 401 || status === 403 || (status === 400 && !trimmedKey)) {
         return res.json({
           success: true,
-          data: { models: [], keyRequired: !trimmedKey },
+          data: {
+            models: [],
+            keyRequired: !trimmedKey,
+            message:
+              status === 403
+                ? `${provider.name} rejected the key or the key lacks the models permission (check its scopes).`
+                : status === 401 && trimmedKey
+                  ? `${provider.name} rejected this key.`
+                  : undefined,
+          },
+        });
+      }
+      if (status === 402) {
+        return res.json({
+          success: true,
+          data: {
+            models: [],
+            keyRequired: false,
+            message: `${provider.name} accepted the key but the account is out of balance.`,
+          },
         });
       }
       return res.json({
