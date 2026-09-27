@@ -132,6 +132,15 @@ describe("buildByokStreamRequest per provider", () => {
     expect(byokErrorMessage("CodeCraft API", 429, "")).toContain("Rate limited");
   });
 
+  it("names the firewall — never the key — for challenge pages", () => {
+    const challenge =
+      '<!DOCTYPE html><html lang="en-US"><head><title>Just a moment...</title><meta src="https://challenges.cloudflare.com">';
+    const msg = byokErrorMessage("CodeCraft API", 403, challenge);
+    expect(msg).toContain("firewall");
+    expect(msg).not.toContain("scopes");
+    expect(msg).not.toContain("<!DOCTYPE");
+  });
+
   it("strips a echoed provider:model prefix so codecraft never 404s on it", () => {
     const req = (model?: string) =>
       parseByokHeaders({

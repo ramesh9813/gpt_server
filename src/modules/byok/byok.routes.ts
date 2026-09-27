@@ -4,6 +4,7 @@ import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 import {
   fetchByokModels,
+  firewallChallengeMessage,
   getByokProvider,
   isByokKeyFormatSupported,
 } from "../../lib/byok";
@@ -67,6 +68,19 @@ router.post(
       });
     } catch (err: any) {
       const status = err?.status;
+      // Firewall challenge (HTML): the key was never evaluated — say so
+      // instead of blaming the key.
+      if (err?.challenged) {
+        return res.json({
+          success: true,
+          data: {
+            supported: true,
+            verified: false,
+            models: [],
+            message: firewallChallengeMessage(provider.name),
+          },
+        });
+      }
       if (status === 429) {
         return res.json({
           success: true,
@@ -159,6 +173,16 @@ router.post(
       });
     } catch (err: any) {
       const status = err?.status;
+      if (err?.challenged) {
+        return res.json({
+          success: true,
+          data: {
+            models: [],
+            keyRequired: false,
+            message: firewallChallengeMessage(provider.name),
+          },
+        });
+      }
       if (status === 401 || status === 403 || (status === 400 && !trimmedKey)) {
         return res.json({
           success: true,

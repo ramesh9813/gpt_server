@@ -1,6 +1,11 @@
 // Pure BYOK request shaping — isolated from prisma/express so unit tests can
 // cover every provider without the app/DB import chain (or its slow boot).
 import type { ByokRequest } from "../../lib/byok";
+import {
+  BYOK_USER_AGENT,
+  firewallChallengeMessage,
+  isFirewallChallengeBody,
+} from "../../lib/byok";
 import type { OpenRouterMessage } from "./chat.service";
 
 // ---- Gemini request shaping -------------------------------------------------
@@ -124,6 +129,11 @@ export const byokErrorMessage = (
   status: number,
   errorText: string
 ): string => {
+  // Firewall challenge page (HTML): the server never reached the API — say
+  // so plainly instead of dumping markup or blaming the key.
+  if (isFirewallChallengeBody(errorText)) {
+    return `${providerName} error (${status}): ${firewallChallengeMessage(providerName)}`;
+  }
   const cause =
     status === 401
       ? "Invalid or revoked API key."
@@ -168,6 +178,7 @@ export const buildByokStreamRequest = (
     return {
       url: `${provider.baseUrl}/messages`,
       headers: {
+        "User-Agent": BYOK_USER_AGENT,
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
         "Content-Type": "application/json",
@@ -190,6 +201,7 @@ export const buildByokStreamRequest = (
     return {
       url: `${provider.baseUrl}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
       headers: {
+        "User-Agent": BYOK_USER_AGENT,
         "Content-Type": "application/json",
         "x-goog-api-key": apiKey,
       },
@@ -224,6 +236,7 @@ export const buildByokStreamRequest = (
   return {
     url: `${provider.baseUrl}/chat/completions`,
     headers: {
+      "User-Agent": BYOK_USER_AGENT,
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
       ...(provider.chatHeaders ?? {}),

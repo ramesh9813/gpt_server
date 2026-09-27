@@ -2,6 +2,7 @@
 // generator and the MCQ quiz builder when the turn runs on a user's own
 // provider key. The key is used for this call only; never stored or logged.
 import type { ByokRequest } from "../../lib/byok";
+import { BYOK_USER_AGENT } from "../../lib/byok";
 
 const FOLLOWUP_STYLE_TIMEOUT_MS = 90000;
 
@@ -21,6 +22,7 @@ export const callByokText = async (
         {
           method: "POST",
           headers: {
+            "User-Agent": BYOK_USER_AGENT,
             "Content-Type": "application/json",
             "x-goog-api-key": apiKey,
           },
@@ -51,6 +53,7 @@ export const callByokText = async (
       const response = await fetch(`${provider.baseUrl}/messages`, {
         method: "POST",
         headers: {
+          "User-Agent": BYOK_USER_AGENT,
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
           "Content-Type": "application/json",
@@ -75,6 +78,7 @@ export const callByokText = async (
     const response = await fetch(`${provider.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
+        "User-Agent": BYOK_USER_AGENT,
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
         ...(provider.chatHeaders ?? {}),

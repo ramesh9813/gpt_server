@@ -303,6 +303,39 @@ export const getByokProvider = (raw: unknown): ByokProvider | null => {
   return BYOK_PROVIDERS[id] ?? null;
 };
 
+// Datacenter egress IPs are routinely challenged by provider firewalls
+// (Cloudflare "Just a moment…" pages). A real browser-grade User-Agent on
+// outbound provider calls lowers that false-positive rate.
+export const BYOK_USER_AGENT =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+// True when the body is a firewall challenge page (HTML), i.e. the server
+// never reached the API at all — never a key/scopes/balance problem.
+export const isFirewallChallengeBody = (body: unknown): boolean => {
+  if (typeof body !== "string" || body.length === 0) return false;
+  return /<\s*!doctype|<\s*html|just a moment|challenges\.cloudflare|cf-challenge|attention required/i.test(
+    body
+  );
+};
+
+export const firewallChallengeMessage = (providerName: string): string =>
+  `${providerName} is shielded by a network firewall (Cloudflare check) that blocked this server's request before it reached the API — not an API-key problem. Retry shortly; if it persists, the server's IP is flagged, so ask ${providerName} support to allow it or move the backend to a trusted network.`;
+
+// Throwable provider error carrying status + body + challenge flag so route
+// handlers can tell "bad key" apart from "firewall blocked the server".
+export const providerStatusError = async (
+  response: Response
+): Promise<Error & { status?: number; body?: string; challenged?: boolean }> => {
+  const text = await response.text().catch(() => "");
+  const err = new Error(
+    `provider returned ${response.status}`
+  ) as Error & { status?: number; body?: string; challenged?: boolean };
+  err.status = response.status;
+  err.body = text.slice(0, 2000);
+  err.challenged = isFirewallChallengeBody(text);
+  return err;
+};
+
 export const isByokKeyFormatSupported = (
   provider: ByokProvider,
   apiKey: string
@@ -355,17 +388,14 @@ export const fetchByokModels = async (
   if (provider.kind === "anthropic") {
     const response = await fetch(`${provider.baseUrl}/models`, {
       headers: {
+        "User-Agent": BYOK_USER_AGENT,
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
       },
       signal: AbortSignal.timeout(10000),
     });
     if (!response.ok) {
-      const err = new Error(`provider returned ${response.status}`) as Error & {
-        status?: number;
-      };
-      err.status = response.status;
-      throw err;
+      throw await providerStatusError(response);
     }
     const json = (await response.json()) as any;
     const list: any[] = Array.isArray(json?.data) ? json.data : [];
@@ -378,15 +408,14 @@ export const fetchByokModels = async (
 
   if (provider.kind === "gemini") {
     const response = await fetch(`${provider.baseUrl}/models?pageSize=500`, {
-      headers: apiKey ? { "x-goog-api-key": apiKey } : {},
+      headers: {
+        "User-Agent": BYOK_USER_AGENT,
+        ...(apiKey ? { "x-goog-api-key": apiKey } : {}),
+      },
       signal: AbortSignal.timeout(10000),
     });
     if (!response.ok) {
-      const err = new Error(`provider returned ${response.status}`) as Error & {
-        status?: number;
-      };
-      err.status = response.status;
-      throw err;
+      throw await providerStatusError(response);
     }
     const json = (await response.json()) as any;
     const list: any[] = Array.isArray(json?.models) ? json.models : [];
@@ -404,15 +433,14 @@ export const fetchByokModels = async (
   }
 
   const response = await fetch(`${provider.baseUrl}/models`, {
-    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+    headers: {
+      "User-Agent": BYOK_USER_AGENT,
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    },
     signal: AbortSignal.timeout(10000),
   });
   if (!response.ok) {
-    const err = new Error(`provider returned ${response.status}`) as Error & {
-      status?: number;
-    };
-    err.status = response.status;
-    throw err;
+    throw await providerStatusError(response);
   }
   const json = (await response.json()) as any;
   const list: any[] = Array.isArray(json?.data) ? json.data : [];
