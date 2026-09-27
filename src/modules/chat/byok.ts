@@ -22,10 +22,11 @@ export const streamByokCompletion = async (
     byok: ByokRequest;
     userMessageId?: string;
     think?: boolean;
+    artifact?: boolean;
     webSearch?: boolean;
   }
 ) => {
-  const { assistantMessageId, conversationId, messages, byok, userMessageId, think, webSearch } = opts;
+  const { assistantMessageId, conversationId, messages, byok, userMessageId, think, artifact, webSearch } = opts;
   const { provider, model, apiKey } = byok;
   const storedModel = `${provider.id}:${model}`;
   const startedAt = Date.now();
@@ -111,7 +112,7 @@ export const streamByokCompletion = async (
   };
 
   try {
-    const streamReq = buildByokStreamRequest(byok, messages, { think, webSearch });
+    const streamReq = buildByokStreamRequest(byok, messages, { think, artifact, webSearch });
     const response = await fetch(streamReq.url, {
       method: "POST",
       headers: streamReq.headers,

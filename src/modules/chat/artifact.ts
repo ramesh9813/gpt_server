@@ -21,7 +21,9 @@ export const ARTIFACT_SYSTEM_PROMPT =
   "Fixed layout order: the Canvas/SVG simulation is ALWAYS at the top and the control panel is ALWAYS " +
   "docked at the bottom (controls in a bottom bar); never place controls above the canvas and never intermix them. " +
   "Keep prose outside the fence to at most one short intro line; " +
-  "never split the code across multiple fences — exactly one ```html:artifact block.";
+  "never split the code across multiple fences — exactly one ```html:artifact block. " +
+  "Budget your output so the document FINISHES: always emit the complete file through the closing </html> " +
+  "and the closing fence — never stop mid-code and never leave tags unclosed, even for complex simulations.";
 
 // Light-mode values live in `colors`; dark-mode values live in `dark`.
 // `radius` is the brand's large radius token (card/composer roundness).

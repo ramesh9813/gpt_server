@@ -63,6 +63,11 @@ export const TIMEOUT = {
 // ---------- Token / truncation budgets ----------
 export const TOKEN = {
   RESEARCH_MAX_TOKENS: 8000,
+  // Artifact turns emit a full standalone HTML document — needs headroom so
+  // simulations complete instead of truncating mid-code. Gemini caps output
+  // lower, so it gets its own (universally accepted) ceiling.
+  ARTIFACT_MAX_TOKENS: 16000,
+  ARTIFACT_MAX_TOKENS_GEMINI: 8192,
   BYOK_REASONING_MAX_TOKENS: 8192,
   BYOK_DEFAULT_MAX_TOKENS: 4096,
   FOLLOWUPS_MAX_TOKENS: 150,

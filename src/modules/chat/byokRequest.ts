@@ -6,6 +6,7 @@ import {
   firewallChallengeMessage,
   isFirewallChallengeBody,
 } from "../../lib/byok";
+import { TOKEN } from "../../lib/constants";
 import type { OpenRouterMessage } from "./chat.service";
 
 // ---- Gemini request shaping -------------------------------------------------
@@ -168,10 +169,11 @@ export const byokErrorMessage = (
 export const buildByokStreamRequest = (
   byok: ByokRequest,
   messages: OpenRouterMessage[],
-  opts: { think?: boolean; webSearch?: boolean } = {}
+  opts: { think?: boolean; artifact?: boolean; webSearch?: boolean } = {}
 ): { url: string; headers: Record<string, string>; body: Record<string, unknown> } => {
   const { provider, model, apiKey } = byok;
   const allowReasoning = opts.think === true;
+  const isArtifactTurn = opts.artifact === true;
 
   if (provider.kind === "anthropic") {
     const { system, messages: anthropicMessages } = toAnthropicPayload(messages);
@@ -185,8 +187,13 @@ export const buildByokStreamRequest = (
       },
       body: {
         model,
-        // Thinking mode needs headroom above the reasoning budget.
-        max_tokens: allowReasoning ? 8192 : 4096,
+        // Thinking mode needs headroom above the reasoning budget;
+        // artifact turns need room for the full HTML document.
+        max_tokens: isArtifactTurn
+          ? TOKEN.ARTIFACT_MAX_TOKENS
+          : allowReasoning
+            ? 8192
+            : 4096,
         stream: true,
         ...(allowReasoning
           ? { thinking: { type: "enabled", budget_tokens: 2048 } }
@@ -207,8 +214,18 @@ export const buildByokStreamRequest = (
       },
       body: {
         ...toGeminiPayload(messages),
-        ...(allowReasoning
-          ? { generationConfig: { thinkingConfig: { includeThoughts: true } } }
+        ...(allowReasoning || isArtifactTurn
+          ? {
+              generationConfig: {
+                ...(allowReasoning
+                  ? { thinkingConfig: { includeThoughts: true } }
+                  : {}),
+                // Gemini caps output lower — use its own artifact ceiling.
+                ...(isArtifactTurn
+                  ? { maxOutputTokens: TOKEN.ARTIFACT_MAX_TOKENS_GEMINI }
+                  : {}),
+              },
+            }
           : {}),
       },
     };
@@ -218,6 +235,9 @@ export const buildByokStreamRequest = (
     model,
     messages,
     stream: true,
+    // Artifact turns emit a full HTML document — provider defaults truncate
+    // them mid-code, so set an explicit ceiling (other turns untouched).
+    ...(isArtifactTurn ? { max_tokens: TOKEN.ARTIFACT_MAX_TOKENS } : {}),
     // Web search via an OpenRouter BYOK key uses the same native tool as the
     // built-in path.
     ...(opts.webSearch === true && provider.id === "openrouter"

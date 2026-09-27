@@ -9,6 +9,7 @@ import {
   type LlmToolDef,
 } from "../llm/toolBridge";
 import { imageDataUrlSchema, MAX_IMAGES } from "../../lib/imageValidation";
+import { TOKEN } from "../../lib/constants";
 
 export const streamSchema = z
   .object({
@@ -90,9 +91,9 @@ export const WEB_SEARCH_SYSTEM_PROMPT =
 export const streamOpenRouterCompletion = async (
   req: Request,
   res: Response,
-  opts: { assistantMessageId: string; conversationId: string; messages: OpenRouterMessage[]; selectedModel: string; research?: boolean; webSearch?: boolean; think?: boolean; canvaUserId?: string }
+  opts: { assistantMessageId: string; conversationId: string; messages: OpenRouterMessage[]; selectedModel: string; research?: boolean; artifact?: boolean; webSearch?: boolean; think?: boolean; canvaUserId?: string }
 ) => {
-  const { assistantMessageId, conversationId, messages, selectedModel, research, webSearch, think, canvaUserId } = opts;
+  const { assistantMessageId, conversationId, messages, selectedModel, research, artifact, webSearch, think, canvaUserId } = opts;
   const startedAt = Date.now();
   // Reasoning stream: forwarded for deep-research turns, and for explicit
   // "Thinking" mode turns (Think chip in the composer). Plain/web-search turns
@@ -189,6 +190,12 @@ export const streamOpenRouterCompletion = async (
     if (research) {
       // Research reports are long; raise the ceiling when in research mode.
       requestBody.max_tokens = 8000;
+    }
+    if (artifact) {
+      // Artifact turns emit a full standalone HTML document — a provider
+      // default cap (often 1–4k) truncates simulations mid-code. Raise the
+      // ceiling so the document finishes through </html> + closing fence.
+      requestBody.max_tokens = TOKEN.ARTIFACT_MAX_TOKENS;
     }
     if (research || think) {
       // Deep-research and "Thinking" mode runs stream thinking tokens before

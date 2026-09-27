@@ -3,7 +3,7 @@ import { prisma } from "../../lib/prisma";
 import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 import { resolveModelForRole, isImageOnlyModel, isVideoOnlyModel } from "../../lib/openrouter";
-import { resolveEffectiveSystemPrompt } from "./artifact";
+import { resolveEffectiveSystemPrompt, wantsArtifact } from "./artifact";
 import { logger } from "../../lib/logger";
 import {
   getStoredImages,
@@ -151,6 +151,10 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   // Artifact turn: explicit client flag OR keyword auto-detect.
   // Applies to retries too so an edited simulation prompt keeps streaming
   // with the artifact system prompt instead of degrading to plain chat.
+  // Same effective check drives the output token ceiling (artifact turns
+  // need room for the full HTML document) on both stream paths below.
+  const isArtifactTurn =
+    artifact === true || wantsArtifact(userMsgContent);
   const effectiveSystemPrompt = await resolveEffectiveSystemPrompt(
     req.user!.id,
     { userMsgContent, artifact, systemPrompt }
@@ -228,6 +232,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       byok,
       userMessageId: streamUserMessageId,
       think: think === true,
+      artifact: isArtifactTurn,
       webSearch: webSearch === true,
     });
   }
@@ -315,6 +320,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     messages: messages as OpenRouterMessage[],
     selectedModel,
     research: research === true,
+    artifact: isArtifactTurn,
     webSearch: webSearch === true,
     think: think === true,
     // Connector tools (Canva): resolved best-effort inside the streamer.

@@ -109,6 +109,28 @@ describe("buildByokStreamRequest per provider", () => {
     expect(req.headers.Authorization).toBe(`Bearer ${key}`);
   });
 
+  it("artifact turns raise the output ceiling so simulations complete", () => {
+    // OpenAI-compatible: no cap on plain turns, 16000 on artifact turns.
+    const plainOpenai = buildByokStreamRequest(mk("openai"), MESSAGES);
+    expect(plainOpenai.body.max_tokens).toBeUndefined();
+    const artifactOpenai = buildByokStreamRequest(mk("openai"), MESSAGES, { artifact: true });
+    expect(artifactOpenai.body.max_tokens).toBe(16000);
+    // Anthropic: artifact beats the thinking default.
+    expect(buildByokStreamRequest(mk("anthropic"), MESSAGES, { artifact: true }).body.max_tokens).toBe(16000);
+    expect(buildByokStreamRequest(mk("anthropic"), MESSAGES, { think: true, artifact: true }).body.max_tokens).toBe(16000);
+    // Gemini: artifact sets its own (lower, universally accepted) ceiling,
+    // merged with thinking config when both are armed.
+    const plainGemini = buildByokStreamRequest(mk("google"), MESSAGES);
+    expect(plainGemini.body.generationConfig).toBeUndefined();
+    const artifactGemini = buildByokStreamRequest(mk("google"), MESSAGES, { artifact: true });
+    expect(artifactGemini.body.generationConfig).toEqual({ maxOutputTokens: 8192 });
+    const bothGemini = buildByokStreamRequest(mk("google"), MESSAGES, { think: true, artifact: true });
+    expect(bothGemini.body.generationConfig).toEqual({
+      thinkingConfig: { includeThoughts: true },
+      maxOutputTokens: 8192,
+    });
+  });
+
   it("maps provider statuses to actionable error text", () => {
     expect(
       byokErrorMessage("CodeCraft API", 401, "Invalid or revoked API key.")
