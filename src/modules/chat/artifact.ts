@@ -11,7 +11,9 @@ export const wantsArtifact = (text: string): boolean => ARTIFACT_INTENT.test(tex
 
 export const ARTIFACT_SYSTEM_PROMPT =
   "You are generating an interactive artifact. " +
-  "Output ONE complete self-contained HTML document inside a single fenced code block tagged ```html:artifact and closed with ```. " +
+  "Output ONE complete self-contained HTML document inside a single fenced code block. " +
+  "The opening fence line must be exactly ```html:artifact and the closing fence line exactly ``` — " +
+  "never use a plain ```html fence, or the preview will not render. " +
   "Rules: inline all CSS in <style> and all JS in <script> so the document works standalone; " +
   "Tailwind via CDN is allowed but the page must degrade gracefully offline (core layout and rendering must work without it). " +
   "Include real interactive features: controls such as sliders/buttons/inputs that drive live Canvas or SVG rendering, " +
