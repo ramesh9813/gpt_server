@@ -133,32 +133,23 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     userMsgContent = userMessage ?? "";
   }
 
+  // Non-critical: derive title in background so it never delays TTFB.
   const trimmedTitle = userMsgContent.trim().replace(/\s+/g, " ");
   if (conversation.title === "New chat" && trimmedTitle.length > 0) {
     const derivedTitle = trimmedTitle.length > 60 ? `${trimmedTitle.slice(0, 57)}...` : trimmedTitle;
-    await prisma.conversation.update({ where: { id: conversationId }, data: { title: derivedTitle } });
+    prisma.conversation.update({ where: { id: conversationId }, data: { title: derivedTitle } }).catch(() => {});
   }
 
-  const history = await prisma.message.findMany({
-    where: { conversationId },
-    orderBy: { createdAt: "asc" },
-  });
-
-  const assistantMsg = await prisma.message.create({
-    data: { conversationId, role: "ASSISTANT", content: "", status: "STREAMING" },
-  });
-
-  // Artifact turn: explicit client flag OR keyword auto-detect.
-  // Applies to retries too so an edited simulation prompt keeps streaming
-  // with the artifact system prompt instead of degrading to plain chat.
-  // Same effective check drives the output token ceiling (artifact turns
-  // need room for the full HTML document) on both stream paths below.
+  // Parallelize the three blocking fetches before streaming — history + assistant
+  // row + brand prompt — so every provider (OpenRouter, CleanAPIs, all BYOK)
+  // pays the single slowest query, not the sum. Critical for fast TTFB.
   const isArtifactTurn =
     artifact === true || wantsArtifact(userMsgContent);
-  const effectiveSystemPrompt = await resolveEffectiveSystemPrompt(
-    req.user!.id,
-    { userMsgContent, artifact, systemPrompt }
-  );
+  const [history, assistantMsg, effectiveSystemPrompt] = await Promise.all([
+    prisma.message.findMany({ where: { conversationId }, orderBy: { createdAt: "asc" } }),
+    prisma.message.create({ data: { conversationId, role: "ASSISTANT", content: "", status: "STREAMING" } }),
+    resolveEffectiveSystemPrompt(req.user!.id, { userMsgContent, artifact, systemPrompt }),
+  ]);
 
   // BYOK turn: plain-text chat streamed from the user's own provider key.
   // Image/video turns stay on built-in models (owner/admin only); general-key

@@ -172,14 +172,21 @@ export const streamOpenRouterCompletion = async (
   // untouched for everyone else. Skipped for deep-research turns (those
   // models search autonomously and may reject extra tools) — same
   // rationale as the web-search tool skip.
+  // Lazy-loaded: resolved on first tool-choice turn only so TTFB is not
+  // delayed for every provider (esp. CleanAPIs / BYOK).
   let canvaTools: LlmToolDef[] = [];
-  if (canvaUserId && research !== true) {
+  let canvaToolsLoaded = false;
+  const loadCanvaTools = async (): Promise<LlmToolDef[]> => {
+    if (canvaToolsLoaded) return canvaTools;
+    canvaToolsLoaded = true;
+    if (!canvaUserId || research === true) return canvaTools;
     try {
       canvaTools = await getAvailableTools(canvaUserId);
     } catch {
       canvaTools = [];
     }
-  }
+    return canvaTools;
+  };
   type PendingToolCall = { id: string; name: string; arguments: string };
   // Use logger (with redaction) instead of console.log; never log raw images.
   const { logger: svcLogger } = await import("../../lib/logger");
@@ -201,6 +208,7 @@ export const streamOpenRouterCompletion = async (
           },
         ]
       : [];
+    const toolsForTurn = await loadCanvaTools();
     const requestBody: Record<string, unknown> = {
       model: selectedModel,
       messages: research
@@ -208,8 +216,8 @@ export const streamOpenRouterCompletion = async (
         : useWebTool
           ? [{ role: "system", content: WEB_SEARCH_SYSTEM_PROMPT }, ...turnMessages]
           : turnMessages,
-      ...(webTools.length > 0 || canvaTools.length > 0
-        ? { tools: [...webTools, ...canvaTools], tool_choice: "auto" }
+      ...(webTools.length > 0 || toolsForTurn.length > 0
+        ? { tools: [...webTools, ...toolsForTurn], tool_choice: "auto" }
         : {}),
       stream: true,
     };
@@ -248,6 +256,7 @@ export const streamOpenRouterCompletion = async (
       svcLogger.warn({ status: response.status }, "OpenRouter web-search turn failed, retrying without tools");
       searchNotice =
         "Web search isn't available for the selected model — answering from general knowledge.";
+      const toolsForFallback = await loadCanvaTools();
       const fallbackBody: Record<string, unknown> = {
         model: selectedModel,
         messages: [
@@ -255,7 +264,7 @@ export const streamOpenRouterCompletion = async (
           ...turnMessages,
         ],
         stream: true,
-        ...(canvaTools.length > 0 ? { tools: canvaTools, tool_choice: "auto" } : {}),
+        ...(toolsForFallback.length > 0 ? { tools: toolsForFallback, tool_choice: "auto" } : {}),
       };
       response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
         method: "POST",
@@ -362,7 +371,8 @@ export const streamOpenRouterCompletion = async (
       if (result.terminal) return;
       usage = result.usage ?? usage;
       const requested = result.toolCalls.filter((c) => c.name);
-      if (canvaTools.length === 0 || requested.length === 0 || turn >= 1 || !canvaUserId) {
+      const toolsResolved = await loadCanvaTools();
+      if (toolsResolved.length === 0 || requested.length === 0 || turn >= 1 || !canvaUserId) {
         break;
       }
       const uid = canvaUserId;
