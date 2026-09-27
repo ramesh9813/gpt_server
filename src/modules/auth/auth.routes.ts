@@ -29,9 +29,11 @@ const loginSchema = z.object({
   password: z.string().min(8),
 });
 
+const googleSchema = z.object({}).passthrough();
+
 router.post("/signup", validateBody(signupSchema), signupHandler);
 router.post("/login", validateBody(loginSchema), loginHandler);
-router.post("/google", googleHandler);
+router.post("/google", validateBody(googleSchema), googleHandler);
 router.post("/logout", logoutHandler);
 router.post("/refresh", refreshHandler);
 

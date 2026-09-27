@@ -5,6 +5,7 @@ import { listOpenRouterModels, supportsImageGeneration } from "../../lib/openrou
 import { sseHead, sseSend, sseEnd, finishTextReply } from "./sse";
 import { generateFollowups } from "./followups";
 import { buildHistoryMessages } from "./history";
+import { logger } from "../../lib/logger";
 
 // Local to avoid a chat.service <-> mediaReply import cycle.
 const toUserContent = (text: string, images?: string[]): string | Array<{ type: string; text?: string; image_url?: { url: string } }> => {
@@ -150,11 +151,11 @@ export const sendImageReply = async (
         sendEvent("followups", { messageId: assistantMessageId, followups });
       }
     } catch (err) {
-      console.error("Followups error:", (err as any)?.message || err);
+      logger.error({ err }, "Followups error");
     }
     return safeEnd();
   } catch (err: any) {
-    console.error("Image reply error:", err?.message || err);
+    logger.error({ err }, "Image reply error");
     return finishText("Image generation failed. Please try again.");
   }
 };

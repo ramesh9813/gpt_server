@@ -59,14 +59,29 @@ export const adminEmails: Set<string> = new Set(
     .filter(Boolean)
 );
 
+const FAIL_SECRETS = new Set([
+  "chatui-jwt-access-secret-fallback-key",
+  "chatui-jwt-refresh-secret-fallback-key",
+  "",
+]);
+
+const isWeakSecret = (v: string) => FAIL_SECRETS.has(v) || v.trim().length < 32;
+
 if (process.env.NODE_ENV === "production") {
   if (
-    env.JWT_ACCESS_SECRET === "chatui-jwt-access-secret-fallback-key" ||
-    env.JWT_REFRESH_SECRET === "chatui-jwt-refresh-secret-fallback-key"
+    isWeakSecret(env.JWT_ACCESS_SECRET) ||
+    isWeakSecret(env.JWT_REFRESH_SECRET)
   ) {
-    console.warn(
-      "⚠️ [WARN] Using default JWT secrets in production. Please set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET in your Render environment variables."
+    throw new Error(
+      "FATAL: JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be set to strong random values (>=32 chars) in production. Refusing to start."
     );
+  }
+  if (env.CANVA_CLIENT_ID || env.CANVA_CLIENT_SECRET || env.CANVA_REDIRECT_URI) {
+    if (!env.CONNECTOR_ENCRYPTION_KEY || !/^[0-9a-fA-F]{64}$/.test(env.CONNECTOR_ENCRYPTION_KEY.trim())) {
+      throw new Error(
+        "FATAL: CONNECTOR_ENCRYPTION_KEY must be 64 hex chars when Canva connector is configured. Generate with: openssl rand -hex 32"
+      );
+    }
   }
   if (!env.OPENROUTER_API_KEY) {
     console.warn(

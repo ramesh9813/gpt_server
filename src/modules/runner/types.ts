@@ -22,6 +22,8 @@ export type ExecuteResult = {
 };
 
 export const CACHE_TTL_MS = 5 * 60 * 1000;
+// Re-export centralized constant for callers that prefer lib/constants
+export { CACHE_TTL_MS as RUNNER_CACHE_TTL_MS } from "../../lib/constants";
 
 export class RunnerError extends Error {
   status: number;

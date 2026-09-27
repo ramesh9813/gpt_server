@@ -24,31 +24,62 @@ const app = express();
 
 app.set("trust proxy", 1);
 
-app.use(pinoHttp({ logger: logger as any }));
+// Redact secrets from structured logs (pino-http).
+app.use(
+  pinoHttp({
+    logger: logger as any,
+    redact: {
+      paths: [
+        "req.headers.authorization",
+        "req.headers.cookie",
+        "req.headers['x-byok-key']",
+        "req.headers['x-csrf-token']",
+      ],
+      remove: true,
+    },
+  } as any)
+);
 app.use(
   helmet({
-    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
-    crossOriginEmbedderPolicy: false
+    crossOriginOpenerPolicy: { policy: "same-origin" },
+    crossOriginEmbedderPolicy: false,
+    // HSTS only over HTTPS (helmet handles it internally).
+    hsts: { maxAge: 31536000, includeSubDomains: true, preload: false },
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "https://api.openrouter.ai", "https://openrouter.ai"],
+        fontSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        frameAncestors: ["'none'"],
+      },
+    },
   })
 );
 const allowedOrigins = env.APP_ORIGIN.split(",")
   .map((origin) => origin.trim().replace(/\/+$/, ""))
   .filter(Boolean);
 
+const isDev = process.env.NODE_ENV !== "production";
 app.use(
   cors({
-    origin: (origin, callback) => {
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
       if (!origin) {
         return callback(null, true);
       }
       const normalizedOrigin = origin.replace(/\/+$/, "");
       const isAllowed = allowedOrigins.includes(normalizedOrigin);
-      const isLocalhost = /^https?:\/\/(?:localhost|127\.0\.0\.1)(:\d+)?$/.test(
-        origin
-      );
+      const isLocalhost =
+        isDev &&
+        /^https?:\/\/(?:localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
       if (isAllowed || isLocalhost) {
         return callback(null, true);
       }
+      logger.warn({ origin }, "CORS rejected origin");
       return callback(null, false);
     },
     credentials: true
@@ -61,23 +92,46 @@ app.use(csrfProtect);
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 20
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: false,
 });
 const chatLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 30
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 const runnerLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 10
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 const byokLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 30
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 const adminLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 60
+  limit: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+const globalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+const modelsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 app.get("/", (_req, res) => {
@@ -93,14 +147,14 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.use("/api/auth", authLimiter, authRoutes);
-app.use("/api/me", userRoutes);
-app.use("/api/folders", folderRoutes);
-app.use("/api/conversations", conversationRoutes);
-app.use("/api/conversations", messageRoutes);
+app.use("/api/me", globalLimiter, userRoutes);
+app.use("/api/folders", globalLimiter, folderRoutes);
+app.use("/api/conversations", globalLimiter, conversationRoutes);
+app.use("/api/conversations", globalLimiter, messageRoutes);
 app.use("/api/chat", chatLimiter, chatRoutes);
-app.use("/api/models", modelRoutes);
+app.use("/api/models", modelsLimiter, modelRoutes);
 app.use("/api/runner", runnerLimiter, runnerRoutes);
-app.use("/api/connectors", connectorRoutes);
+app.use("/api/connectors", globalLimiter, connectorRoutes);
 app.use("/api/byok", byokLimiter, byokRoutes);
 app.use("/api/admin", adminLimiter, adminRoutes);
 

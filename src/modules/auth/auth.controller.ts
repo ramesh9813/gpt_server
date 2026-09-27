@@ -142,9 +142,14 @@ export const googleHandler = async (req: Request, res: Response, next: NextFunct
     try {
       decoded = await firebaseAdmin.auth().verifyIdToken(token);
     } catch (err: any) {
+      const isDev = process.env.NODE_ENV !== "production";
       return res.status(401).json({
         success: false,
-        error: { code: "INVALID_GOOGLE_TOKEN", message: "Invalid or expired Google token", details: err?.message },
+        error: {
+          code: "INVALID_GOOGLE_TOKEN",
+          message: "Invalid or expired Google token",
+          ...(isDev ? { details: err?.message } : {}),
+        },
       });
     }
     if (!decoded.email) {
@@ -190,7 +195,7 @@ export const googleHandler = async (req: Request, res: Response, next: NextFunct
 };
 
 export const logoutHandler = async (req: Request, res: Response) => {
-  const refreshToken = req.body?.refreshToken || req.cookies?.refreshToken;
+  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
   if (refreshToken) {
     await prisma.refreshToken.updateMany({
       where: { tokenHash: hashToken(refreshToken), revokedAt: null },
@@ -202,20 +207,18 @@ export const logoutHandler = async (req: Request, res: Response) => {
 };
 
 export const refreshHandler = async (req: Request, res: Response) => {
-  const refreshToken = req.body?.refreshToken || req.cookies?.refreshToken;
+  // Prefer cookie; body fallback only for clients without cookie jar.
+  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
   if (!refreshToken) {
     return res.status(401).json({ success: false, error: { code: "UNAUTHORIZED", message: "Missing refresh token" } });
   }
   try {
     const payload = verifyRefreshToken(refreshToken);
-    // Re-resolve role from the DB so upgrades (e.g. owner email) take effect
-    // instead of recycling the stale JWT role forever.
     const dbUser = await prisma.user.findUnique({ where: { id: payload.sub } });
     if (!dbUser) {
       return res.status(401).json({ success: false, error: { code: "UNAUTHORIZED", message: "User not found" } });
     }
     const normalizedRole = effectiveRole(dbUser.email, dbUser.role);
-    // Re-sync an env-pinned role (owner/admin emails) into the DB on refresh.
     if (normalizedRole !== dbUser.role) {
       await prisma.user.update({ where: { id: dbUser.id }, data: { role: normalizedRole } });
     }
@@ -223,7 +226,17 @@ export const refreshHandler = async (req: Request, res: Response) => {
       where: { tokenHash: hashToken(refreshToken), revokedAt: null, expiresAt: { gt: new Date() } },
     });
     if (!stored) {
-      return res.status(401).json({ success: false, error: { code: "UNAUTHORIZED", message: "Refresh token revoked" } });
+      // Token reuse / theft detection: JWT valid but DB row missing -> revoke all
+      // refresh tokens for this user and force re-login.
+      await prisma.refreshToken.updateMany({
+        where: { userId: payload.sub, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      clearAuthCookies(req, res);
+      return res.status(401).json({
+        success: false,
+        error: { code: "UNAUTHORIZED", message: "Refresh token revoked — please sign in again." },
+      });
     }
     await prisma.refreshToken.update({ where: { id: stored.id }, data: { revokedAt: new Date() } });
     const accessToken = signAccessToken({ sub: payload.sub, role: normalizedRole });

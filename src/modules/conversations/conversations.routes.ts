@@ -59,6 +59,18 @@ router.get("/", requireAuth, async (req, res) => {
 
 router.post("/", requireAuth, validateBody(createSchema), async (req, res) => {
   const { folderId } = req.body;
+  // IDOR guard: folder must belong to the caller.
+  if (folderId) {
+    const folder = await prisma.folder.findFirst({
+      where: { id: folderId, userId: req.user!.id },
+    });
+    if (!folder) {
+      return res.status(404).json({
+        success: false,
+        error: { code: "NOT_FOUND", message: "Folder not found" },
+      });
+    }
+  }
   const conversation = await prisma.conversation.create({
     data: {
       userId: req.user!.id,
@@ -114,6 +126,18 @@ router.patch(
       });
     }
 
+    // IDOR guard for folder move
+    if (folderId) {
+      const folder = await prisma.folder.findFirst({
+        where: { id: folderId, userId: req.user!.id },
+      });
+      if (!folder) {
+        return res.status(404).json({
+          success: false,
+          error: { code: "NOT_FOUND", message: "Folder not found" },
+        });
+      }
+    }
     const updated = await prisma.conversation.update({
       where: { id: conversation.id },
       data: {

@@ -21,12 +21,19 @@ export const errorHandler = (
 
   logger.error({ err }, "Unhandled error");
   const isDev = process.env.NODE_ENV !== "production";
+  const errAny = err as { message?: string; stack?: string };
+  if (isDev) {
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: "SERVER_ERROR",
+        message: "Something went wrong",
+        details: errAny?.message,
+      },
+    });
+  }
   return res.status(500).json({
     success: false,
-    error: {
-      code: "SERVER_ERROR",
-      message: "Something went wrong",
-      details: isDev ? (err as Error)?.message : undefined
-    }
+    error: { code: "SERVER_ERROR", message: "Something went wrong" },
   });
 };

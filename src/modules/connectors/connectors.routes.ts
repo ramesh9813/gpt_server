@@ -33,22 +33,14 @@ const requireProvider = (req: Request, res: Response, next: NextFunction) => {
   return next();
 };
 
-// Top-level browser navigation (window.location.href) cannot send an
-// Authorization header and cross-origin cookies are often missing/blocked,
-// so plain requireAuth returns 401 JSON here. Accept the SPA's stored access
-// token via ?token= (or ?accessToken=) as a fallback, and redirect
-// unauthenticated hops to the login page instead of JSON.
+// Top-level navigation authorize: relies on httpOnly cookies (and optionally
+// Authorization header for SPA-initiated navigations). Tokens in query strings
+// are never accepted — they leak via Referer, logs and history.
 const requireAuthForAuthorize = (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
   const bearerToken =
     authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  const queryToken =
-    typeof req.query.token === "string" && req.query.token
-      ? req.query.token
-      : typeof req.query.accessToken === "string" && req.query.accessToken
-        ? req.query.accessToken
-        : null;
-  const token = bearerToken || req.cookies?.accessToken || queryToken;
+  const token = bearerToken || req.cookies?.accessToken;
 
   const loginRedirect = () => {
     const origin = env.APP_ORIGIN.split(",")[0]?.trim().replace(/\/+$/, "") || "";

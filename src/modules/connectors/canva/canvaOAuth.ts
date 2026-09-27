@@ -19,8 +19,13 @@ const STATE_TTL_MS = 10 * 60 * 1000;
 const base64Url = (buf: Buffer): string =>
   buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
+const ALLOWED_ORIGINS = new Set(
+  env.APP_ORIGIN.split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean)
+);
+
 const appReturnUrl = (params: string): string => {
-  const origin = env.APP_ORIGIN.split(",")[0]?.trim().replace(/\/+$/, "") || "";
+  const raw = env.APP_ORIGIN.split(",")[0]?.trim().replace(/\/+$/, "") || "";
+  const origin = ALLOWED_ORIGINS.has(raw) ? raw : [...ALLOWED_ORIGINS][0] || "";
   return `${origin}/account?${params}`;
 };
 
@@ -77,15 +82,20 @@ export const canvaCallbackHandler = async (req: Request, res: Response) => {
     }
     if (!code || !state) return fail("missing_params");
 
-    const row = await prisma.connectorOAuthState.findUnique({
-      where: { stateHash: hashToken(state) },
-    });
+    // Atomic single-use consume: delete by stateHash returns the row or null.
+    // A concurrent replay gets null and fails invalid_state.
+    let row: { id: string; userId: string; provider: string; codeVerifier: string; expiresAt: Date } | null = null;
+    try {
+      row = await prisma.connectorOAuthState.delete({
+        where: { stateHash: hashToken(state) },
+      });
+    } catch {
+      row = null;
+    }
+    void pruneExpiredOAuthStates();
     if (!row || row.provider !== "canva" || row.expiresAt.getTime() < Date.now()) {
       return fail("invalid_state");
     }
-    // Single-use: delete BEFORE exchanging so a replayed callback is dead.
-    await prisma.connectorOAuthState.delete({ where: { id: row.id } }).catch(() => null);
-    void pruneExpiredOAuthStates();
 
     if (!canvaOAuthConfigured()) return fail("misconfigured");
 

@@ -60,18 +60,26 @@ router.patch(
   requireAuth,
   validateBody(settingsSchema),
   async (req, res) => {
+    // Explicit pick — never pass req.body through to Prisma (mass-assignment guard).
+    const allowed: Record<string, unknown> = {};
+    const fields = ["theme", "fontScale", "brand", "pinHeader", "model", "imageModel", "videoModel", "appFontSize", "iconScale"] as const;
+    for (const k of fields) {
+      if ((req.body as Record<string, unknown>)[k] !== undefined) {
+        allowed[k] = (req.body as Record<string, unknown>)[k];
+      }
+    }
     let settings;
     try {
       settings = await prisma.userSettings.update({
         where: { userId: req.user!.id },
-        data: req.body
+        data: allowed
       });
     } catch (err: unknown) {
       // Tolerate DBs not yet pushed with newer settings columns:
       // retry without the new fields instead of failing the whole save.
       const code = (err as { code?: string })?.code;
-      if ((code === "P2022" || code === "P2003") && req.body && typeof req.body === "object") {
-        const { appFontSize: _a, iconScale: _i, imageModel: _m, videoModel: _v, ...rest } = req.body as Record<string, unknown>;
+      if ((code === "P2022" || code === "P2003") && Object.keys(allowed).length > 0) {
+        const { appFontSize: _a, iconScale: _i, imageModel: _m, videoModel: _v, ...rest } = allowed as Record<string, unknown>;
         settings = await prisma.userSettings.update({
           where: { userId: req.user!.id },
           data: rest

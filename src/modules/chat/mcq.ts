@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { env } from "../../lib/config";
 import { sseHead, sseSend, sseEnd, finishTextReply } from "./sse";
+import { logger } from "../../lib/logger";
 import type { ByokRequest } from "../../lib/byok";
 import { callByokText } from "./byokCall";
 
@@ -285,7 +286,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
     // NO followups call for quiz turns.
     return safeEnd();
   } catch (err: any) {
-    console.error("MCQ reply error:", err?.message || err);
+    logger.error({ err }, "MCQ reply error");
     return finishText(`Sorry, I couldn't generate a quiz on "${cleanTopic}" right now. Please try again.`);
   }
 };

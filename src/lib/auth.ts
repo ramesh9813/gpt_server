@@ -18,20 +18,41 @@ export const verifyPassword = async (password: string, hash: string) => {
   return bcrypt.compare(password, hash);
 };
 
+const JWT_ISSUER = "chatui";
+const JWT_AUDIENCE = "chatui-client";
+
 export const signAccessToken = (payload: JwtPayload) => {
-  return jwt.sign(payload, env.JWT_ACCESS_SECRET, { expiresIn: "15m" });
+  return jwt.sign(payload, env.JWT_ACCESS_SECRET, {
+    expiresIn: "15m",
+    algorithm: "HS256",
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE,
+  });
 };
 
 export const signRefreshToken = (payload: JwtPayload) => {
-  return jwt.sign(payload, env.JWT_REFRESH_SECRET, { expiresIn: "30d" });
+  return jwt.sign(payload, env.JWT_REFRESH_SECRET, {
+    expiresIn: "30d",
+    algorithm: "HS256",
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE,
+  });
 };
 
 export const verifyAccessToken = (token: string) => {
-  return jwt.verify(token, env.JWT_ACCESS_SECRET) as JwtPayload;
+  return jwt.verify(token, env.JWT_ACCESS_SECRET, {
+    algorithms: ["HS256"],
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE,
+  }) as JwtPayload;
 };
 
 export const verifyRefreshToken = (token: string) => {
-  return jwt.verify(token, env.JWT_REFRESH_SECRET) as JwtPayload;
+  return jwt.verify(token, env.JWT_REFRESH_SECRET, {
+    algorithms: ["HS256"],
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE,
+  }) as JwtPayload;
 };
 
 export const hashToken = (token: string) => {

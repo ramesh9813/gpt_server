@@ -352,7 +352,8 @@ export const streamByokCompletion = async (
         sendEvent("followups", { messageId: assistantMessageId, followups });
       }
     } catch (err) {
-      console.error("BYOK followups error:", (err as any)?.message || err);
+      const { logger } = await import("../../lib/logger");
+      logger.error({ err }, "BYOK followups error");
     }
     return safeEnd();
   } catch (err: any) {

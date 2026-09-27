@@ -4,6 +4,7 @@ import { env } from "../../lib/config";
 import { listOpenRouterModels, supportsVideoGeneration } from "../../lib/openrouter";
 import { sseHead, sseSend, sseEnd, finishTextReply } from "./sse";
 import { generateFollowups } from "./followups";
+import { logger } from "../../lib/logger";
 
 // Video-generation turn: mirrors sendImageReply. Uses the selected model when
 // it can emit video, otherwise answers with a plain-text capability notice.
@@ -77,7 +78,7 @@ export const sendVideoReply = async (
     });
     if (!submit.ok) {
       const body = await submit.text().catch(() => "");
-      console.error("Video submit error:", submit.status, body.slice(0, 500));
+      logger.warn({ status: submit.status, body: body.slice(0, 500) }, "Video submit error");
       return finishText(
         `Video generation failed (${submit.status}). ${providerReason(body) || "Please try again."}`
       );
@@ -180,11 +181,11 @@ export const sendVideoReply = async (
         sendEvent("followups", { messageId: assistantMessageId, followups });
       }
     } catch (err) {
-      console.error("Followups error:", (err as any)?.message || err);
+      logger.error({ err }, "Followups error");
     }
     return safeEnd();
   } catch (err: any) {
-    console.error("Video reply error:", err?.message || err);
+    logger.error({ err }, "Video reply error");
     return finishText("Video generation failed. Please try again.");
   }
 };

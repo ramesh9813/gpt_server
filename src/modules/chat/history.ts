@@ -1,6 +1,8 @@
 // Token-budgeted conversation history (payload only — DB untouched).
 // Rebuilt from DB every turn, never cached per model, so memory survives
 // model switches. Image bytes never count toward the char budget.
+import { HISTORY } from "../../lib/constants";
+
 export type OpenRouterTextPart = { type: "text"; text: string };
 export type OpenRouterImagePart = { type: "image_url"; image_url: { url: string } };
 export type OpenRouterContent = string | Array<OpenRouterTextPart | OpenRouterImagePart>;
@@ -14,13 +16,13 @@ export type BuildHistoryOpts = {
   systemPrompt?: string; existingUserMessageId?: string; recentKeep?: number; charBudget?: number;
 };
 export type HistoryStats = { promptChars: number; imageCount: number; droppedImages: number; truncated: number };
-export const DEFAULT_RECENT_KEEP = 10;
-export const DEFAULT_CHAR_BUDGET = 24000;
-const LONG_LIMIT = 2000;
-const HEAD_LEN = 1000;
-const TAIL_LEN = 1000;
-const COMPACT_LEN = 400;
-const ANCHOR_LEN = 200;
+export const DEFAULT_RECENT_KEEP = HISTORY.DEFAULT_RECENT_KEEP;
+export const DEFAULT_CHAR_BUDGET = HISTORY.DEFAULT_CHAR_BUDGET;
+const LONG_LIMIT = HISTORY.LONG_LIMIT;
+const HEAD_LEN = HISTORY.HEAD_LEN;
+const TAIL_LEN = HISTORY.TAIL_LEN;
+const COMPACT_LEN = HISTORY.COMPACT_LEN;
+const ANCHOR_LEN = HISTORY.ANCHOR_LEN;
 type Item = { role: "system" | "user" | "assistant"; text: string; images: string[] };
 const strArr = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length > 0) : [];
@@ -152,7 +154,7 @@ export const buildHistoryMessages = (
       setText(messages[idx], compact400(getText(messages[idx])));
       truncated++;
     } else {
-      let best = -1; let bestLen = COMPACT_LEN;
+      let best = -1; let bestLen: number = COMPACT_LEN;
       for (let i = recentFrom; i < messages.length; i++) {
         const l = textLen(messages[i]);
         if (l > bestLen) { bestLen = l; best = i; }
@@ -161,8 +163,6 @@ export const buildHistoryMessages = (
         setText(messages[best], compact400(getText(messages[best])));
         truncated++;
       } else {
-        // All turns already ≤400ch yet still over budget (huge history / tiny
-        // budget): drop the oldest non-system turn so the cap is truly hard.
         let drop = -1;
         for (let i = 0; i < messages.length; i++) {
           if (messages[i].role !== "system") { drop = i; break; }

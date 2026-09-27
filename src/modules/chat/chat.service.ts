@@ -8,30 +8,16 @@ import {
   executeMcpTool,
   type LlmToolDef,
 } from "../llm/toolBridge";
-
-// Vision: inline base64 dataURLs, no storage/S3. Keep small to fit 10mb JSON body.
-export const MAX_IMAGES = 3;
-export const MAX_IMAGE_STRING_LENGTH = 7 * 1024 * 1024; // ~7MB string each (~5MB binary + base64 overhead)
-const IMAGE_PREFIX_REGEX = /^data:image\/(jpeg|jpg|png|webp|gif);base64,/;
-
-const imageDataUrlSchema = z
-  .string()
-  .max(MAX_IMAGE_STRING_LENGTH, "Each image must be under ~7MB")
-  .refine((v) => IMAGE_PREFIX_REGEX.test(v.slice(0, 50)), {
-    message: "images must be dataURL jpeg/png/webp/gif base64",
-  })
-  .refine((v) => v.length > 30, {
-    message: "images must contain base64 payload",
-  });
+import { imageDataUrlSchema, MAX_IMAGES } from "../../lib/imageValidation";
 
 export const streamSchema = z
   .object({
-    conversationId: z.string(),
+    conversationId: z.string().min(1),
     userMessage: z.string().min(1).max(8000).optional(),
-    existingUserMessageId: z.string().optional(),
+    existingUserMessageId: z.string().min(1).optional(),
     images: z.array(imageDataUrlSchema).max(MAX_IMAGES).optional(),
-    model: z.string().optional(),
-    systemPrompt: z.string().optional(),
+    model: z.string().min(1).max(200).optional(),
+    systemPrompt: z.string().max(8000).optional(),
     research: z.boolean().optional(),
     artifact: z.boolean().optional(),
     webSearch: z.boolean().optional(),
@@ -168,7 +154,9 @@ export const streamOpenRouterCompletion = async (
     }
   }
   type PendingToolCall = { id: string; name: string; arguments: string };
-  console.log("Sending messages to OpenRouter:", JSON.stringify(redactForLog(messages), null, 2));
+  // Use logger (with redaction) instead of console.log; never log raw images.
+  const { logger: svcLogger } = await import("../../lib/logger");
+  svcLogger.info({ messages: redactForLog(messages) }, "Sending messages to OpenRouter");
 
   // One streamed completion turn. Appends text/reasoning into the shared
   // buffers (persisted + forwarded live) and collects tool_calls deltas.
@@ -223,7 +211,8 @@ export const streamOpenRouterCompletion = async (
     // entirely. Retry once WITHOUT the web tool and tell the client to note
     // "search unavailable, answering from general knowledge".
     if (!response.ok && useWebTool) {
-      console.error("OpenRouter web-search turn failed, retrying without tools:", response.status);
+      const { logger: svcLogger } = await import("../../lib/logger");
+      svcLogger.warn({ status: response.status }, "OpenRouter web-search turn failed, retrying without tools");
       searchNotice =
         "Web search isn't available for the selected model — answering from general knowledge.";
       const fallbackBody: Record<string, unknown> = {
@@ -247,10 +236,11 @@ export const streamOpenRouterCompletion = async (
         signal: controller.signal,
       });
     }
-    console.log("OpenRouter Response Status:", response.status, response.statusText);
+    const { logger: svcLogger2 } = await import("../../lib/logger");
+    svcLogger2.info({ status: response.status }, "OpenRouter response status");
     if (!response.ok || !response.body) {
       const errorText = await response.text();
-      console.error("OpenRouter Error:", errorText);
+      svcLogger2.error({ errorText: errorText.slice(0, 2000) }, "OpenRouter error");
       await prisma.message.update({ where: { id: assistantMessageId }, data: { status: "ERROR", error: errorText } });
       sendEvent("error", { code: "OPENROUTER_ERROR", message: `OpenRouter error: ${errorText}` });
       safeEnd();
@@ -438,7 +428,8 @@ export const streamOpenRouterCompletion = async (
         sendEvent("followups", { messageId: assistantMessageId, followups });
       }
     } catch (err) {
-      console.error("Followups error:", (err as any)?.message || err);
+      const { logger: svcLogger3 } = await import("../../lib/logger");
+      svcLogger3.error({ err }, "Followups error");
     }
     return safeEnd();
   } catch (err: any) {
@@ -456,7 +447,8 @@ export const streamOpenRouterCompletion = async (
       await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
       return safeEnd();
     }
-    console.error("Stream error:", err);
+    const { logger: svcLogger4 } = await import("../../lib/logger");
+    svcLogger4.error({ err }, "Stream error");
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: { status: "ERROR", error: err?.message || "Stream error" },

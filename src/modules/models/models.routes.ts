@@ -40,12 +40,13 @@ router.get("/", async (req, res) => {
       meta: { role, total: models.length, source, fetchedAt }
     });
   } catch (err: any) {
+    const isDev = process.env.NODE_ENV !== "production";
     return res.status(502).json({
       success: false,
       error: {
         code: "OPENROUTER_ERROR",
         message: "Failed to fetch models",
-        details: err?.message || "Unknown error"
+        ...(isDev ? { details: err?.message || "Unknown error" } : {}),
       }
     });
   }
