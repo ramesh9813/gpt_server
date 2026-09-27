@@ -250,6 +250,58 @@ export const streamByokCompletion = async (
       }
     }
 
+    // SSE tail: a final data: line can arrive without a trailing newline
+    // (legal TCP split) and would otherwise be dropped with the buffer.
+    // OpenAI-shaped path only — anthropic/gemini keep their own parsing.
+    if (provider.kind !== "anthropic" && provider.kind !== "gemini") {
+      const tail = `${buffer}${decoder.decode()}`.trim();
+      if (tail.startsWith("data:")) {
+        const data = tail.replace(/^data:\s*/, "");
+        if (data && data !== "[DONE]") {
+          try {
+            const parsed = JSON.parse(data);
+            const anns = parsed.choices?.[0]?.delta?.annotations;
+            if (Array.isArray(anns)) {
+              for (const a of anns) {
+                const c = a?.url_citation;
+                if (c && typeof c.url === "string" && c.url) {
+                  sourceMap.set(c.url, {
+                    url: c.url,
+                    title: typeof c.title === "string" && c.title ? c.title : c.url,
+                  });
+                }
+              }
+            }
+            const tailDelta = parsed.choices?.[0]?.delta?.content;
+            if (typeof tailDelta === "string" && tailDelta.length > 0) {
+              assistantContent += tailDelta;
+              sendEvent("token", { delta: tailDelta });
+            }
+            const tailReasoning =
+              parsed.choices?.[0]?.delta?.reasoning ??
+              parsed.choices?.[0]?.delta?.reasoning_content;
+            if (
+              allowReasoning &&
+              typeof tailReasoning === "string" &&
+              tailReasoning.length > 0
+            ) {
+              assistantReasoning += tailReasoning;
+              sendEvent("reasoning", { delta: tailReasoning });
+            }
+            if (parsed.usage) usage = parsed.usage;
+          } catch {
+            // ignore malformed tail
+          }
+        }
+      }
+    }
+
+    // A 200 with zero deltas (filtered, mis-parsed, or empty turn) must not
+    // persist as a silent empty COMPLETE bubble — fail with a reason.
+    if (!assistantContent && !assistantReasoning && !usage) {
+      return fail(502, "The provider returned an empty stream (no content).");
+    }
+
     const sources = [...sourceMap.values()];
     await prisma.message.update({
       where: { id: assistantMessageId },

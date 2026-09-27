@@ -1,7 +1,7 @@
 // Request-shape coverage for every BYOK provider kind. Guards the bugs we hit
 // in practice: strict gateways 422ing on stream_options, wrong endpoints for
 // Gemini/Anthropic, missing thinking/web-search wiring, wrong auth headers.
-import { BYOK_PROVIDERS, type ByokProviderId } from "../src/lib/byok";
+import { BYOK_PROVIDERS, parseByokHeaders, type ByokProviderId } from "../src/lib/byok";
 import { buildByokStreamRequest, byokErrorMessage } from "../src/modules/chat/byokRequest";
 import type { OpenRouterMessage } from "../src/modules/chat/chat.service";
 
@@ -121,6 +121,34 @@ describe("buildByokStreamRequest per provider", () => {
     expect(byokErrorMessage("CodeCraft API", 500, "x".repeat(600))).toHaveLength(
       "CodeCraft API error (500): ".length + 500
     );
+    // OpenAI error envelope: surface the human message, not raw JSON.
+    expect(
+      byokErrorMessage("CodeCraft API", 500, '{"error":{"message":"boom"}}')
+    ).toBe("CodeCraft API error (500): boom");
+  });
+
+  it("maps 422 validation and 429 rate-limit statuses", () => {
+    expect(byokErrorMessage("CodeCraft API", 422, "")).toContain("Invalid request");
+    expect(byokErrorMessage("CodeCraft API", 429, "")).toContain("Rate limited");
+  });
+
+  it("strips a echoed provider:model prefix so codecraft never 404s on it", () => {
+    const req = (model?: string) =>
+      parseByokHeaders({
+        headers: {
+          "x-byok-provider": "codecraft",
+          ...(model !== undefined ? { "x-byok-model": model } : {}),
+          "x-byok-key": `cc_${"k".repeat(48)}`,
+        },
+      } as any);
+    expect(req("codecraft:gpt-5.6-luna")).toMatchObject({
+      provider: BYOK_PROVIDERS.codecraft,
+      model: "gpt-5.6-luna",
+    });
+    expect(req("gpt-5.6-luna")).toMatchObject({ model: "gpt-5.6-luna" });
+    expect(req("codecraft:")).toMatchObject({
+      error: "A model must be selected for the custom provider.",
+    });
   });
 
   it("anthropic message shaping merges consecutive same-role turns", () => {

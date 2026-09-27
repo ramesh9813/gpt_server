@@ -27,6 +27,11 @@ describe("byok provider registry", () => {
     ]);
   });
 
+  it("codecraft points at the official base URL with a fallback shortlist", () => {
+    expect(BYOK_PROVIDERS.codecraft.baseUrl).toBe("https://codecraftapi.com/v1");
+    expect(BYOK_PROVIDERS.codecraft.models.length).toBeGreaterThan(0);
+  });
+
   it("resolves providers case-insensitively and rejects unknown ids", () => {
     expect(getByokProvider("OpenAI")?.id).toBe("openai");
     expect(getByokProvider("nvidia")?.id).toBe("nvidia");

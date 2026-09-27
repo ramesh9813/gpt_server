@@ -284,7 +284,16 @@ export const BYOK_PROVIDERS: Record<ByokProviderId, ByokProvider> = {
     keyPattern: /^cc_[A-Za-z0-9_-]{16,}$/,
     keyHint: "cc_...",
     keylessModels: false,
-    models: [],
+    // Fallback shortlist (live GET /v1/models wins when reachable): public
+    // ids observed on the catalog. Keeps the dropdown usable offline.
+    models: [
+      "gpt-5.6-luna",
+      "deepseek-v4-flash-0731",
+      "qwen3.8-27b",
+      "gemini-3.7-flash",
+      "kimi-k2.6",
+      "grok-4.5",
+    ],
   },
 };
 
@@ -314,7 +323,14 @@ export const parseByokHeaders = (
   if (!providerRaw) return null;
   const provider = getByokProvider(providerRaw);
   if (!provider) return { error: `Unknown provider "${providerRaw}".` };
-  const model = String(req.headers["x-byok-model"] ?? "").trim();
+  let model = String(req.headers["x-byok-model"] ?? "").trim();
+  // Defensive: callers sometimes echo the stored "provider:model" id back
+  // (e.g. after a refetch). The provider itself wants the plain model id —
+  // "codecraft:codecraft:xxx" would 404 as unknown model.
+  const prefix = `${provider.id}:`.toLowerCase();
+  if (model.toLowerCase().startsWith(prefix)) {
+    model = model.slice(prefix.length).trim();
+  }
   if (!model || model.length > 200) {
     return { error: "A model must be selected for the custom provider." };
   }

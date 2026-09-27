@@ -133,8 +133,23 @@ export const byokErrorMessage = (
           ? "Key lacks permission for this call (check the key's scopes in the provider dashboard)."
           : status === 404
             ? "Unknown model or endpoint — refresh the provider's model list and reselect."
-            : null;
-  const detail = errorText.slice(0, 500);
+            : status === 422
+              ? "Invalid request — unknown model or unsupported parameter (refresh the model list and retry)."
+              : status === 429
+                ? "Rate limited — wait a moment and retry."
+                : null;
+  // Providers answer inside the OpenAI error envelope — surface the human
+  // message, never the raw JSON.
+  let detail = errorText.slice(0, 500);
+  try {
+    const parsed = JSON.parse(errorText);
+    const msg = (parsed as any)?.error?.message;
+    if (typeof msg === "string" && msg.trim()) {
+      detail = msg.slice(0, 500);
+    }
+  } catch {
+    // not JSON — keep the raw text
+  }
   return `${providerName} error (${status}):${cause ? ` ${cause}` : ""}${detail ? ` ${detail}` : ""}`;
 };
 

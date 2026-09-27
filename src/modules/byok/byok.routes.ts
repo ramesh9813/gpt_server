@@ -67,6 +67,17 @@ router.post(
       });
     } catch (err: any) {
       const status = err?.status;
+      if (status === 429) {
+        return res.json({
+          success: true,
+          data: {
+            supported: true,
+            verified: false,
+            models: [],
+            message: `${provider.name} is rate limiting right now — wait a moment and verify again.`,
+          },
+        });
+      }
       if (status === 402) {
         return res.json({
           success: true,
@@ -170,6 +181,16 @@ router.post(
             models: [],
             keyRequired: false,
             message: `${provider.name} accepted the key but the account is out of balance.`,
+          },
+        });
+      }
+      if (status === 429) {
+        return res.json({
+          success: true,
+          data: {
+            models: [],
+            keyRequired: false,
+            message: `${provider.name} is rate limiting right now — wait a moment and retry.`,
           },
         });
       }
