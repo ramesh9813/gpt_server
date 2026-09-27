@@ -30,9 +30,9 @@ const getWandboxCompilers = async (): Promise<WandboxCompiler[]> => {
     return wandboxCache.data;
   }
 
-  const response = await fetch(
-    `${env.WANDBOX_BASE_URL}/api/list.json`
-  );
+  const response = await fetch(`${env.WANDBOX_BASE_URL}/api/list.json`, {
+    signal: AbortSignal.timeout(Number(env.RUNNER_TIMEOUT_MS) || 30000),
+  });
   if (!response.ok) {
     throw new Error("Failed to fetch Wandbox compilers");
   }

@@ -49,6 +49,7 @@ export const refreshCanvaTokens = async (
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: body.toString(),
+      signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) {
       logger.warn(
@@ -85,6 +86,7 @@ export const revokeCanvaToken = async (token: string): Promise<void> => {
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: body.toString(),
+      signal: AbortSignal.timeout(15000),
     });
   } catch (err) {
     // Best-effort: local state is deleted regardless.

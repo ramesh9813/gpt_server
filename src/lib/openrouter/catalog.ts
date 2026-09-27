@@ -62,10 +62,12 @@ export const listOpenRouterModels = async (force?: boolean) => {
     return cachedModels;
   }
 
+  const CATALOG_TIMEOUT_MS = 10_000;
   let response = await fetch(
     `${env.OPENROUTER_BASE_URL}/models?output_modalities=text,image,video,audio&sort=throughput-high-to-low`,
     {
-      headers: buildHeaders(true)
+      headers: buildHeaders(true),
+      signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
     }
   );
   let source: CatalogSource = "authed";
@@ -73,7 +75,8 @@ export const listOpenRouterModels = async (force?: boolean) => {
     response = await fetch(
       `${env.OPENROUTER_BASE_URL}/models?output_modalities=text,image,video,audio&sort=throughput-high-to-low`,
       {
-        headers: buildHeaders(false)
+        headers: buildHeaders(false),
+        signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
       }
     );
     source = "fallback";
@@ -84,14 +87,16 @@ export const listOpenRouterModels = async (force?: boolean) => {
     response = await fetch(
       `${env.OPENROUTER_BASE_URL}/models?output_modalities=text,image,video,audio`,
       {
-        headers: buildHeaders(false)
+        headers: buildHeaders(false),
+        signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
       }
     );
   }
 
   if (!response.ok) {
     response = await fetch(`${env.OPENROUTER_BASE_URL}/models`, {
-      headers: buildHeaders(false)
+      headers: buildHeaders(false),
+      signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
     });
   }
 

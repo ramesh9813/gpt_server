@@ -7,6 +7,45 @@ const normalizedEnv = {
     process.env.OPENROUTER_API_KEY ?? process.env.OROUTER_API_KEY
 };
 
+const isPrivateHost = (hostname: string): boolean => {
+  const h = hostname.toLowerCase();
+  if (h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "metadata.google.internal") return true;
+  if (h.startsWith("10.")) return true;
+  if (h.startsWith("192.168.")) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+  if (h === "169.254.169.254") return true;
+  return false;
+};
+
+const httpsUrl = (defaultVal: string) =>
+  z
+    .string()
+    .default(defaultVal)
+    .refine(
+      (v) => {
+        if (!v) return true;
+        try {
+          const u = new URL(v);
+          return u.protocol === "https:" || u.protocol === "http:";
+        } catch {
+          return false;
+        }
+      },
+      { message: "Must be a valid http(s) URL" }
+    )
+    .refine(
+      (v) => {
+        if (!v) return true;
+        try {
+          const { hostname } = new URL(v);
+          return !isPrivateHost(hostname);
+        } catch {
+          return true;
+        }
+      },
+      { message: "URL points to a private/metadata host" }
+    );
+
 const envSchema = z.object({
   PORT: z.string().default("5000"),
   DATABASE_URL: z
@@ -21,13 +60,13 @@ const envSchema = z.object({
   OPENROUTER_API_KEY: isTest
     ? z.string().optional().default("test")
     : z.string().default(""),
-  OPENROUTER_BASE_URL: z.string().default("https://openrouter.ai/api/v1"),
+  OPENROUTER_BASE_URL: httpsUrl("https://openrouter.ai/api/v1"),
   OPENROUTER_MODEL_DEFAULT: z.string().default("openai/gpt-4o-mini"),
   OPENROUTER_MODEL_DEFAULT_FREE: z.string().optional(),
   APP_ORIGIN: z.string().default("http://localhost:5173"),
   RUNNER_PROVIDER: z.enum(["piston", "wandbox"]).default("wandbox"),
-  RUNNER_BASE_URL: z.string().default("https://emkc.org/api/v2/piston"),
-  WANDBOX_BASE_URL: z.string().default("https://wandbox.org"),
+  RUNNER_BASE_URL: httpsUrl("https://emkc.org/api/v2/piston"),
+  WANDBOX_BASE_URL: httpsUrl("https://wandbox.org"),
   RUNNER_TIMEOUT_MS: z.string().optional(),
   OWNER_EMAILS: z.string().default("rameshsingh9813@gmail.com"),
   ADMIN_EMAILS: z.string().default("rameshkumarmahato970@gmail.com"),
@@ -40,7 +79,7 @@ const envSchema = z.object({
   CANVA_SCOPES: z
     .string()
     .default("design:content:read design:meta:read asset:read brandtemplate:meta:read profile:read folder:read"),
-  CANVA_MCP_URL: z.string().default("https://mcp.canva.com/mcp"),
+  CANVA_MCP_URL: httpsUrl("https://mcp.canva.com/mcp"),
   // 64 hex chars (32 bytes) for AES-256-GCM token encryption at rest.
   CONNECTOR_ENCRYPTION_KEY: z.string().default(""),
 });

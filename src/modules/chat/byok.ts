@@ -113,11 +113,24 @@ export const streamByokCompletion = async (
 
   try {
     const streamReq = buildByokStreamRequest(byok, messages, { think, artifact, webSearch });
+    // Combine client disconnect + hard timeout so a slow/malicious provider cannot hold the worker forever
+    const byokTimeout = AbortSignal.timeout(90_000);
+    const combinedSignal: AbortSignal =
+      typeof AbortSignal.any === "function"
+        ? AbortSignal.any([controller.signal, byokTimeout])
+        : controller.signal;
+    // Fallback timer when AbortSignal.any is unavailable
+    let timeoutSub: ReturnType<typeof setTimeout> | null = null;
+    if (typeof (AbortSignal as unknown as { any?: unknown }).any !== "function") {
+      timeoutSub = setTimeout(() => controller.abort(), 90_000);
+    }
     const response = await fetch(streamReq.url, {
       method: "POST",
       headers: streamReq.headers,
       body: JSON.stringify(streamReq.body),
-      signal: controller.signal,
+      signal: combinedSignal,
+    }).finally(() => {
+      if (timeoutSub) clearTimeout(timeoutSub);
     });
 
     if (!response.ok || !response.body) {

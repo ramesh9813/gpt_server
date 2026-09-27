@@ -115,6 +115,7 @@ export const canvaCallbackHandler = async (req: Request, res: Response) => {
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: body.toString(),
+      signal: AbortSignal.timeout(15000),
     });
     if (!tokenRes.ok) {
       logger.warn({ status: tokenRes.status }, "Canva code exchange rejected");

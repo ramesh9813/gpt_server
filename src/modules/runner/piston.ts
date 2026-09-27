@@ -13,7 +13,9 @@ const getRuntimes = async () => {
     return pistonCache.data;
   }
 
-  const response = await fetch(`${env.RUNNER_BASE_URL}/runtimes`);
+  const response = await fetch(`${env.RUNNER_BASE_URL}/runtimes`, {
+    signal: AbortSignal.timeout(Number(env.RUNNER_TIMEOUT_MS) || 10000),
+  });
   if (!response.ok) {
     throw new Error("Failed to fetch runtimes");
   }
