@@ -1,0 +1,117 @@
+// Request-shape coverage for every BYOK provider kind. Guards the bugs we hit
+// in practice: strict gateways 422ing on stream_options, wrong endpoints for
+// Gemini/Anthropic, missing thinking/web-search wiring, wrong auth headers.
+import { BYOK_PROVIDERS, type ByokProviderId } from "../src/lib/byok";
+import { buildByokStreamRequest } from "../src/modules/chat/byokRequest";
+import type { OpenRouterMessage } from "../src/modules/chat/chat.service";
+
+const MESSAGES: OpenRouterMessage[] = [
+  { role: "system", content: "You are helpful." },
+  { role: "user", content: "make a counter simulation" },
+];
+const key = "TESTKEY_1234567890abcdefghij";
+const mk = (id: ByokProviderId) => ({
+  provider: BYOK_PROVIDERS[id],
+  model: "test-model",
+  apiKey: key,
+});
+
+const OPENAI_KIND_IDS: ByokProviderId[] = [
+  "openrouter",
+  "openai",
+  "grok",
+  "meta",
+  "nvidia",
+  "deepseek",
+  "qwen",
+  "moonshot",
+  "groq",
+  "mistral",
+  "cleanapis",
+  "infron",
+  "apinex",
+  "codecraft",
+];
+
+describe("buildByokStreamRequest per provider", () => {
+  it.each(OPENAI_KIND_IDS)("%s → POST /chat/completions, no thinking extras", (id) => {
+    const req = buildByokStreamRequest(mk(id), MESSAGES);
+    expect(req.url).toBe(`${BYOK_PROVIDERS[id].baseUrl}/chat/completions`);
+    expect(req.headers.Authorization).toBe(`Bearer ${key}`);
+    expect(req.body.model).toBe("test-model");
+    expect(req.body.stream).toBe(true);
+    expect(Array.isArray(req.body.messages)).toBe(true);
+    expect(req.body.thinking).toBeUndefined();
+  });
+
+  it("only OpenAI/OpenRouter stream with usage chunks (strict gateways 422 otherwise)", () => {
+    const withUsage: ByokProviderId[] = ["openai", "openrouter"];
+    const withoutUsage = OPENAI_KIND_IDS.filter((id) => !withUsage.includes(id));
+    for (const id of withUsage) {
+      expect(buildByokStreamRequest(mk(id), MESSAGES).body.stream_options).toEqual({
+        include_usage: true,
+      });
+    }
+    for (const id of withoutUsage) {
+      expect(buildByokStreamRequest(mk(id), MESSAGES).body.stream_options).toBeUndefined();
+    }
+  });
+
+  it("openrouter adds attribution headers + a native web_search tool when enabled", () => {
+    const off = buildByokStreamRequest(mk("openrouter"), MESSAGES);
+    expect(off.headers["HTTP-Referer"]).toBeDefined();
+    expect(off.body.tools).toBeUndefined();
+    const on = buildByokStreamRequest(mk("openrouter"), MESSAGES, { webSearch: true });
+    expect(Array.isArray(on.body.tools)).toBe(true);
+    expect((on.body.tools as any[])[0].type).toBe("openrouter:web_search");
+    // OpenRouter BYOK reasoning passthrough needs nothing special in the body.
+    const thinking = buildByokStreamRequest(mk("openrouter"), MESSAGES, { think: true });
+    expect(thinking.body.thinking).toBeUndefined();
+  });
+
+  it("gemini hits streamGenerateContent with systemInstruction + x-goog-api-key", () => {
+    const req = buildByokStreamRequest(mk("google"), MESSAGES);
+    expect(req.url).toBe(`${BYOK_PROVIDERS.google.baseUrl}/models/test-model:streamGenerateContent?alt=sse`);
+    expect(req.headers["x-goog-api-key"]).toBe(key);
+    expect(req.headers.Authorization).toBeUndefined();
+    expect(req.body.systemInstruction).toBeDefined();
+    expect(Array.isArray(req.body.contents)).toBe(true);
+  });
+
+  it("gemini thinking mode adds thinkingConfig only when armed", () => {
+    const plain = buildByokStreamRequest(mk("google"), MESSAGES);
+    expect(plain.body.generationConfig).toBeUndefined();
+    const thinking = buildByokStreamRequest(mk("google"), MESSAGES, { think: true });
+    expect(thinking.body.generationConfig).toEqual({
+      thinkingConfig: { includeThoughts: true },
+    });
+  });
+
+  it("anthropic hits /messages with x-api-key, alternating messages, and thinking budget in think mode", () => {
+    const plain = buildByokStreamRequest(mk("anthropic"), MESSAGES);
+    expect(plain.url).toBe(`${BYOK_PROVIDERS.anthropic.baseUrl}/messages`);
+    expect(plain.headers["x-api-key"]).toBe(key);
+    expect(plain.headers["anthropic-version"]).toBe("2023-06-01");
+    expect(plain.body.stream).toBe(true);
+    expect(plain.body.thinking).toBeUndefined();
+    expect(plain.body.max_tokens).toBe(4096);
+    expect(plain.body.system).toBe("You are helpful.");
+
+    const thinking = buildByokStreamRequest(mk("anthropic"), MESSAGES, { think: true });
+    expect(thinking.body.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
+    expect(thinking.body.max_tokens).toBe(8192);
+  });
+
+  it("anthropic message shaping merges consecutive same-role turns", () => {
+    const convo: OpenRouterMessage[] = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "user", content: "q1" },
+      { role: "user", content: "q2" },
+    ];
+    const req = buildByokStreamRequest(mk("anthropic"), convo);
+    const msgs = req.body.messages as Array<{ role: string; content: unknown[] }>;
+    expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect((msgs[2].content as any[]).length).toBe(2);
+  });
+});

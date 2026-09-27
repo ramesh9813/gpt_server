@@ -46,6 +46,10 @@ export type ByokProvider = {
   models: string[];
   // Extra headers for chat/completions calls (e.g. OpenRouter attribution).
   chatHeaders?: Record<string, string>;
+  // True only where the provider officially accepts `stream_options:
+  // { include_usage: true }`. Strict OpenAI-compatible gateways (CodeCraft,
+  // CleanAPIs, APInex, Infron…) 422 on unlisted fields, so it stays off there.
+  streamUsage?: boolean;
   // True when every model on the provider is usable under a free tier credit
   // (e.g. Groq / NVIDIA dev tiers) — the "Free only" filter keeps everything.
   allModelsFree?: boolean;
@@ -60,6 +64,7 @@ export const BYOK_PROVIDERS: Record<ByokProviderId, ByokProvider> = {
     keyPattern: /^sk-or-[A-Za-z0-9_-]{20,}$/,
     keyHint: "sk-or-...",
     keylessModels: true, // GET /models works without a key
+    streamUsage: true,
     models: [
       "openai/gpt-4o-mini",
       "openai/gpt-4o",
@@ -81,6 +86,7 @@ export const BYOK_PROVIDERS: Record<ByokProviderId, ByokProvider> = {
     keyPattern: /^sk-[A-Za-z0-9_-]{20,}$/,
     keyHint: "sk-...",
     keylessModels: false,
+    streamUsage: true,
     models: [
       "gpt-4.1",
       "gpt-4.1-mini",
