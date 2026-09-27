@@ -3,6 +3,7 @@
 // ```html:artifact fence as an interactive preview.
 // Brand tokens below mirror gpt_client/src/theme/brands/*.css (light values in
 // `colors`, dark values in `dark`). No new dependencies.
+import { prisma } from "../../lib/prisma";
 
 export const ARTIFACT_INTENT = /\b(simulation|simulator|interactive visualization|artifact)\b/i;
 
@@ -110,8 +111,7 @@ export const normalizeBrandId = (raw?: string | null): string => {
 // Full system prompt for artifact turns: base prompt + exact brand style +
 // compact 75vh / minimal-content fit rules. `userPrompt` is the optional
 // caller-supplied systemPrompt, appended as additional instructions.
-export const buildArtifactPrompt = (brandId?: string | null, userPrompt?: string): string => {
-  const id = normalizeBrandId(brandId);
+export const buildArtifactPrompt = (brandId?: string | null, userPrompt?: string): string => {  const id = normalizeBrandId(brandId);
   const s = BRAND_STYLE_GUIDE[id] || BRAND_STYLE_GUIDE["default"];
   const extra = (userPrompt || "").trim();
   const style =
@@ -135,4 +135,30 @@ export const buildArtifactPrompt = (brandId?: string | null, userPrompt?: string
   return extra
     ? `${ARTIFACT_SYSTEM_PROMPT}${style}\n\nAdditional instructions:\n${extra}`
     : `${ARTIFACT_SYSTEM_PROMPT}${style}`;
+};
+
+// Shared by /stream and /direct-prepare: artifact turns (explicit flag or
+// keyword auto-detect) get the brand-aware artifact system prompt — brand
+// loaded best-effort, "default" on any failure. Everything else passes the
+// caller's systemPrompt through untouched.
+export const resolveEffectiveSystemPrompt = async (
+  userId: string,
+  opts: { userMsgContent: string; artifact?: boolean; systemPrompt?: string }
+): Promise<string | undefined> => {
+  const isArtifactTurn =
+    opts.artifact === true || wantsArtifact(opts.userMsgContent);
+  if (!isArtifactTurn) return opts.systemPrompt;
+  let artifactBrand = "default";
+  try {
+    const settings = await prisma.userSettings.findUnique({
+      where: { userId },
+      select: { brand: true },
+    });
+    const raw = (settings as { brand?: unknown } | null)?.brand;
+    if (typeof raw === "string" && raw.trim())
+      artifactBrand = raw.trim().toLowerCase();
+  } catch {
+    artifactBrand = "default";
+  }
+  return buildArtifactPrompt(artifactBrand, opts.systemPrompt);
 };

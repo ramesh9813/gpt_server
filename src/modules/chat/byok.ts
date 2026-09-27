@@ -5,6 +5,7 @@
 import type { Request, Response } from "express";
 import { prisma } from "../../lib/prisma";
 import type { ByokRequest } from "../../lib/byok";
+import { isFirewallChallengeBody } from "../../lib/byok";
 import { generateByokFollowups } from "./followups";
 import { buildByokStreamRequest, byokErrorMessage } from "./byokRequest";
 import type { OpenRouterMessage } from "./chat.service";
@@ -19,11 +20,12 @@ export const streamByokCompletion = async (
     conversationId: string;
     messages: OpenRouterMessage[];
     byok: ByokRequest;
+    userMessageId?: string;
     think?: boolean;
     webSearch?: boolean;
   }
 ) => {
-  const { assistantMessageId, conversationId, messages, byok, think, webSearch } = opts;
+  const { assistantMessageId, conversationId, messages, byok, userMessageId, think, webSearch } = opts;
   const { provider, model, apiKey } = byok;
   const storedModel = `${provider.id}:${model}`;
   const startedAt = Date.now();
@@ -91,11 +93,20 @@ export const streamByokCompletion = async (
 
   const fail = async (status: number, errorText: string) => {
     const message = byokErrorMessage(provider.name, status, errorText);
+    const challenged = isFirewallChallengeBody(errorText);
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: { status: "ERROR", error: message },
     });
-    sendEvent("error", { code: "BYOK_ERROR", message });
+    // Row ids ride along so the browser-direct fallback can resume this
+    // exact turn (old clients ignore unknown fields).
+    sendEvent("error", {
+      code: "BYOK_ERROR",
+      message,
+      ...(challenged ? { challenged: true } : {}),
+      assistantMessageId,
+      ...(userMessageId ? { userMessageId } : {}),
+    });
     return safeEnd();
   };
 

@@ -3,7 +3,8 @@ import { prisma } from "../../lib/prisma";
 import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 import { resolveModelForRole, isImageOnlyModel, isVideoOnlyModel } from "../../lib/openrouter";
-import { buildArtifactPrompt } from "./artifact";
+import { resolveEffectiveSystemPrompt } from "./artifact";
+import { logger } from "../../lib/logger";
 import {
   getStoredImages,
   redactForLog,
@@ -13,7 +14,6 @@ import {
   sendVideoReply,
   streamOpenRouterCompletion,
   streamSchema,
-  wantsArtifact,
   wantsImageGeneration,
   wantsMcq,
   wantsVideo,
@@ -22,6 +22,7 @@ import {
 import { buildHistoryMessages } from "./history";
 import { parseByokHeaders } from "../../lib/byok";
 import { streamByokCompletion } from "./byok";
+import directRoutes from "./direct.routes";
 
 const router = Router();
 
@@ -100,6 +101,10 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
 
   let userMsgContent = userMessage || "";
   let userImages: string[] = Array.isArray(images) ? images : [];
+  // Real user-row id for this turn (retry path) or created below (fresh
+  // path) — forwarded so failure events can name both rows for the
+  // browser-direct fallback.
+  let streamUserMessageId: string | undefined = existingUserMessageId;
   if (existingUserMessageId) {
     const existingMessage = await prisma.message.findFirst({
       where: { id: existingUserMessageId, conversationId, role: "USER" },
@@ -115,7 +120,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     // Request images (if any) are ignored when existingUserMessageId is set.
     userImages = getStoredImages(existingMessage);
   } else if (userMessage || userImages.length > 0) {
-    await prisma.message.create({
+    const createdUserMsg = await prisma.message.create({
       data: {
         conversationId,
         role: "USER",
@@ -124,6 +129,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
         status: "COMPLETE",
       },
     });
+    streamUserMessageId = createdUserMsg.id;
     userMsgContent = userMessage ?? "";
   }
 
@@ -145,27 +151,10 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   // Artifact turn: explicit client flag OR keyword auto-detect.
   // Applies to retries too so an edited simulation prompt keeps streaming
   // with the artifact system prompt instead of degrading to plain chat.
-  const isArtifactTurn =
-    artifact === true || wantsArtifact(userMsgContent);
-
-  // Brand-aware artifact prompt: load the user's brand, fallback "default",
-  // tolerate missing row/column (older DBs without UserSettings.brand).
-  let artifactBrand = "default";
-  if (isArtifactTurn) {
-    try {
-      const settings = await prisma.userSettings.findUnique({
-        where: { userId: req.user!.id },
-        select: { brand: true },
-      });
-      const raw = (settings as { brand?: unknown } | null)?.brand;
-      if (typeof raw === "string" && raw.trim()) artifactBrand = raw.trim().toLowerCase();
-    } catch {
-      artifactBrand = "default";
-    }
-  }
-  const effectiveSystemPrompt = isArtifactTurn
-    ? buildArtifactPrompt(artifactBrand, systemPrompt)
-    : systemPrompt;
+  const effectiveSystemPrompt = await resolveEffectiveSystemPrompt(
+    req.user!.id,
+    { userMsgContent, artifact, systemPrompt }
+  );
 
   // BYOK turn: plain-text chat streamed from the user's own provider key.
   // Image/video turns stay on built-in models (owner/admin only); general-key
@@ -228,18 +217,16 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       systemPrompt: effectiveSystemPrompt,
       existingUserMessageId,
     });
-    console.log(
-      `Sending messages to ${byok.provider.name} (BYOK, model=${byok.model}):`,
-      JSON.stringify(redactForLog(messages as OpenRouterMessage[]), null, 2),
-      "historyStats:",
-      JSON.stringify(stats),
-      think === true ? "think mode ON" : "think mode OFF",
+    logger.info(
+      { provider: byok.provider.name, model: byok.model, messages: redactForLog(messages as OpenRouterMessage[]), stats, think: think === true },
+      "Sending BYOK messages"
     );
     return streamByokCompletion(req, res, {
       assistantMessageId: assistantMsg.id,
       conversationId,
       messages: messages as OpenRouterMessage[],
       byok,
+      userMessageId: streamUserMessageId,
       think: think === true,
       webSearch: webSearch === true,
     });
@@ -317,11 +304,9 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     systemPrompt: effectiveSystemPrompt,
     existingUserMessageId,
   });
-  console.log(
-    "Sending messages to OpenRouter:",
-    JSON.stringify(redactForLog(messages as OpenRouterMessage[]), null, 2),
-    "historyStats:",
-    JSON.stringify(stats),
+  logger.info(
+    { messages: redactForLog(messages as OpenRouterMessage[]), stats },
+    "Sending messages to OpenRouter"
   );
 
   return streamOpenRouterCompletion(req, res, {
@@ -337,5 +322,10 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     canvaUserId: req.user!.id,
   });
 });
+
+// Browser-direct fallback routes (/direct-prepare, /direct-finish): nested
+// here so they share the /api/chat mount (and its rate limit) without
+// touching app.ts.
+router.use(directRoutes);
 
 export default router;
