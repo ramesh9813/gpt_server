@@ -46,6 +46,7 @@ model UserSettings {
   imageModel              String    @default("default")
   videoModel              String    @default("default")
   pinHeader               Boolean   @default(false)
+  showTopCard             Boolean   @default(true)
   appFontSize             Int       @default(18)
   iconScale               Float     @default(1)
   devicePhotosFolder      String?   @map("device_photos_folder")
