@@ -5,11 +5,11 @@
  */
 
 // ---------- HTTP / body ----------
-export const JSON_BODY_LIMIT = "10mb" as const;
+export const JSON_BODY_LIMIT = "40mb" as const;
 
 // ---------- Image / vision ----------
-export const MAX_IMAGES = 3 as const;
-export const MAX_IMAGE_STRING_LENGTH = 7 * 1024 * 1024; // ~7MB base64 string
+export const MAX_IMAGES = 5 as const;
+export const MAX_IMAGE_STRING_LENGTH = 12 * 1024 * 1024; // ~12MB base64 string (full-res) — fits 40mb body for 5×
 export const IMAGE_ALLOWED_MIME = /^(jpeg|jpg|png|webp|gif)$/i;
 
 // ---------- Runner ----------
