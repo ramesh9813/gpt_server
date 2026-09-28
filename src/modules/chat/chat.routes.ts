@@ -21,7 +21,7 @@ import {
   type OpenRouterMessage,
 } from "./chat.service";
 import { buildHistoryMessages } from "./history";
-import { parseByokHeaders } from "../../lib/byok";
+import { parseByokHeadersAsync } from "../../lib/providers";
 import { streamByokCompletion } from "./byok";
 import directRoutes from "./direct.routes";
 
@@ -65,7 +65,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   // BYOK (bring-your-own-key): x-byok-* headers mean this chat turn runs on the
   // user's own provider key (stored only in their browser) instead of the
   // server-configured OpenRouter key. Absent headers = unchanged OpenRouter path.
-  const byok = parseByokHeaders(req);
+  const byok = await parseByokHeadersAsync(req as any);
   if (byok && "error" in byok) {
     return res.status(400).json({
       success: false,

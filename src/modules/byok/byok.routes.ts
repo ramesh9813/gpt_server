@@ -5,9 +5,9 @@ import { validateBody } from "../../middleware/validate";
 import {
   fetchByokModels,
   firewallChallengeMessage,
-  getByokProvider,
   isByokKeyFormatSupported,
 } from "../../lib/byok";
+import { getByokProviderAsync } from "../../lib/providers";
 
 const router = Router();
 
@@ -33,7 +33,7 @@ router.post(
     const { provider: providerRaw, apiKey } = req.body as z.infer<
       typeof validateSchema
     >;
-    const provider = getByokProvider(providerRaw);
+    const provider = await getByokProviderAsync(providerRaw);
     if (!provider) {
       return res.status(400).json({
         success: false,
@@ -145,7 +145,7 @@ router.post(
     const { provider: providerRaw, apiKey } = req.body as z.infer<
       typeof modelsSchema
     >;
-    const provider = getByokProvider(providerRaw);
+    const provider = await getByokProviderAsync(providerRaw);
     if (!provider) {
       return res.status(400).json({
         success: false,

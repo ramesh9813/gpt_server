@@ -18,6 +18,7 @@ import modelRoutes from "./modules/models/models.routes";
 import runnerRoutes from "./modules/runner/runner.routes";
 import connectorRoutes from "./modules/connectors/connectors.routes";
 import byokRoutes from "./modules/byok/byok.routes";
+import providersRoutes from "./modules/providers/providers.routes";
 import adminRoutes from "./modules/admin/admin.routes";
 
 const app = express();
@@ -156,6 +157,7 @@ app.use("/api/models", modelsLimiter, modelRoutes);
 app.use("/api/runner", runnerLimiter, runnerRoutes);
 app.use("/api/connectors", globalLimiter, connectorRoutes);
 app.use("/api/byok", byokLimiter, byokRoutes);
+app.use("/api/providers", globalLimiter, providersRoutes);
 app.use("/api/admin", adminLimiter, adminRoutes);
 
 app.use(errorHandler);

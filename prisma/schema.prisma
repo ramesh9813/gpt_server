@@ -165,3 +165,23 @@ model ConnectorOAuthState {
 
   @@index([userId])
 }
+
+// Admin-managed BYOK providers — custom OpenAI-compatible endpoints added
+// at runtime (provider id + base URL + key rules). Merged with the static
+// BYOK_PROVIDERS at serve time; isActive=false hides without deleting.
+model Provider {
+  id               String   @id
+  name             String
+  baseUrl          String
+  kind             String   @default("openai")
+  keyHint          String   @default("your API key")
+  keyPattern       String?
+  keylessModels    Boolean  @default(false)
+  models           String[] @default([])
+  streamUsage      Boolean  @default(false)
+  allModelsFree    Boolean  @default(false)
+  isActive         Boolean  @default(true)
+  createdBy        String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}

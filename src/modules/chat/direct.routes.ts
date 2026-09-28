@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
-import { parseByokHeaders } from "../../lib/byok";
+import { parseByokHeadersAsync } from "../../lib/providers";
 import { resolveEffectiveSystemPrompt } from "./artifact";
 import { mergeSystemPrompt } from "../../lib/tuning";
 import { buildHistoryMessages } from "./history";
@@ -70,7 +70,7 @@ router.post(
       });
     }
 
-    const byok = parseByokHeaders(req);
+    const byok = await parseByokHeadersAsync(req as any);
     if (byok && "error" in byok) {
       return res.status(400).json({
         success: false,
