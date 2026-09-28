@@ -2,6 +2,7 @@
 // Rebuilt from DB every turn, never cached per model, so memory survives
 // model switches. Image bytes never count toward the char budget.
 import { HISTORY } from "../../lib/constants";
+import { prisma } from "../../lib/prisma";
 
 export type OpenRouterTextPart = { type: "text"; text: string };
 export type OpenRouterImagePart = { type: "image_url"; image_url: { url: string } };
@@ -178,4 +179,43 @@ export const buildHistoryMessages = (
   }
   promptChars = messages.reduce((n, m) => n + textLen(m), 0);
   return { messages, stats: { promptChars, imageCount, droppedImages, truncated } };
+};
+
+// How many of the newest messages keep their full media payloads.
+// buildHistoryMessages only ever forwards image bytes from the single
+// latest image-bearing turn (older ones become "[earlier attached image
+// omitted]"), so fetching every historic base64 blob each turn is pure
+// DB/TTFB cost that grows with chat length (multi-MB on image chats).
+const HISTORY_FULL_TAKE = 10;
+
+// Light history fetch for latency-critical paths (first token): text for
+// all rows, full rows (images/videos/files/quiz) only for the newest
+// HISTORY_FULL_TAKE plus an explicitly retried user message.
+export const fetchHistoryRows = async (
+  conversationId: string,
+  opts: { includeUserMessageId?: string } = {}
+): Promise<unknown[]> => {
+  const [light, recent, extra] = await Promise.all([
+    prisma.message.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, role: true, content: true, status: true, quiz: true },
+    }),
+    prisma.message.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: "desc" },
+      take: HISTORY_FULL_TAKE,
+    }),
+    opts.includeUserMessageId
+      ? prisma.message.findMany({
+          where: { conversationId, id: opts.includeUserMessageId },
+        })
+      : Promise.resolve([] as unknown[]),
+  ]);
+  if (recent.length === 0 && extra.length === 0) return light;
+  const full = new Map<string, unknown>();
+  for (const row of [...(recent as unknown[]), ...extra]) {
+    full.set(String((row as { id?: unknown })?.id ?? ""), row);
+  }
+  return light.map((row: { id: unknown }) => full.get(String(row.id)) ?? row);
 };

@@ -1,7 +1,7 @@
 import { env } from "../config";
 import { isDeprecatedModel } from "../modelThroughput";
 import { FREE_MODEL_ONLY_ROLE, UserRole } from "../userRoles";
-import { listOpenRouterModels, type OpenRouterModel } from "./catalog";
+import { cachedModels, listOpenRouterModels, type OpenRouterModel } from "./catalog";
 
 const toNumber = (value?: string) => {
   if (!value) return null;
@@ -58,8 +58,24 @@ const resolveFreeDefaultModel = async () => {
     return env.OPENROUTER_MODEL_DEFAULT;
   }
 
-  const models = await listOpenRouterModels();
+  const models = await listModelsFast();
   return models.find((m) => isFreeOpenRouterModel(m) && !isDeprecatedModel(m))?.id ?? null;
+};
+
+// After a few idle minutes the catalog TTL lapses and a refresh (up to 10s)
+// would block the turn's first token. Race it instead: the warm path
+// resolves instantly; a slow refresh falls back to the last catalog while
+// the fetch still lands in the background for the next turn. Cold boot
+// (empty cache) always waits. A stale deny is re-checked fresh on the next
+// turn, so at most one turn is ever decided on stale data.
+const CATALOG_RACE_MS = 1500;
+
+const listModelsFast = async (): Promise<OpenRouterModel[]> => {
+  if (cachedModels.length === 0) return listOpenRouterModels();
+  const fresh = listOpenRouterModels().catch(() => null);
+  const slow = new Promise<null>((resolve) => setTimeout(() => resolve(null), CATALOG_RACE_MS));
+  const res = await Promise.race([fresh, slow]);
+  return res ?? cachedModels;
 };
 
 export const resolveModelForRole = async (
@@ -98,7 +114,7 @@ export const resolveModelForRole = async (
       return { ok: true, model: requestedModel };
     }
 
-    const models = await listOpenRouterModels();
+    const models = await listModelsFast();
     const matchedModel = models.find((item) => item.id === requestedModel);
     if (matchedModel && isFreeOpenRouterModel(matchedModel) && !isDeprecatedModel(matchedModel)) {
       return { ok: true, model: matchedModel.id };

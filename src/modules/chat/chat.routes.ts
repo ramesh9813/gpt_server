@@ -22,7 +22,7 @@ import {
   wantsVideo,
   type OpenRouterMessage,
 } from "./chat.service";
-import { buildHistoryMessages } from "./history";
+import { buildHistoryMessages, fetchHistoryRows } from "./history";
 import { parseByokHeadersAsync } from "../../lib/providers";
 import { streamByokCompletion } from "./byok";
 import directRoutes from "./direct.routes";
@@ -168,10 +168,12 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   // Parallelize the three blocking fetches before streaming — history + assistant
   // row + brand prompt — so every provider (OpenRouter, CleanAPIs, all BYOK)
   // pays the single slowest query, not the sum. Critical for fast TTFB.
+  // History is fetched light (no historic image blobs — see fetchHistoryRows)
+  // so long image chats don't stall the first token on multi-MB reads.
   const isArtifactTurn =
     artifact === true || wantsArtifact(userMsgContent);
   const [history, assistantMsg, effectiveSystemPrompt] = await Promise.all([
-    prisma.message.findMany({ where: { conversationId }, orderBy: { createdAt: "asc" } }),
+    fetchHistoryRows(conversationId, { includeUserMessageId: streamUserMessageId }),
     prisma.message.create({ data: { conversationId, role: "ASSISTANT", content: "", status: "STREAMING" } }),
     resolveEffectiveSystemPrompt(req.user!.id, { userMsgContent, artifact, systemPrompt }),
   ]);
