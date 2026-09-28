@@ -5,6 +5,7 @@ import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 import { parseByokHeaders } from "../../lib/byok";
 import { resolveEffectiveSystemPrompt } from "./artifact";
+import { mergeSystemPrompt } from "../../lib/tuning";
 import { buildHistoryMessages } from "./history";
 import { wantsMcq } from "./mcq";
 import { wantsImageGeneration, wantsVideo } from "./intents";
@@ -128,12 +129,15 @@ router.post(
       req.user!.id,
       { userMsgContent: userMsg.content, artifact }
     );
+    const tuningPrompt = (conversation as unknown as { customPrompt?: string | null }).customPrompt ?? null;
+    const tuningEnabled = (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? false;
+    const mergedSystemPrompt = mergeSystemPrompt(effectiveSystemPrompt, tuningPrompt, tuningEnabled);
     const history = await prisma.message.findMany({
       where: { conversationId },
       orderBy: { createdAt: "asc" },
     });
     const { messages } = buildHistoryMessages(history, {
-      systemPrompt: effectiveSystemPrompt,
+      systemPrompt: mergedSystemPrompt,
       existingUserMessageId,
     });
 

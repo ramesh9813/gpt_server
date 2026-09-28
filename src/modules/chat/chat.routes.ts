@@ -4,6 +4,7 @@ import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 import { resolveModelForRole, isImageOnlyModel, isVideoOnlyModel } from "../../lib/openrouter";
 import { resolveEffectiveSystemPrompt, wantsArtifact } from "./artifact";
+import { mergeSystemPrompt } from "../../lib/tuning";
 import { logger } from "../../lib/logger";
 import {
   getStoredImages,
@@ -150,6 +151,10 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     prisma.message.create({ data: { conversationId, role: "ASSISTANT", content: "", status: "STREAMING" } }),
     resolveEffectiveSystemPrompt(req.user!.id, { userMsgContent, artifact, systemPrompt }),
   ]);
+  // Per-chat tuning: merged as a guarded system block after the base prompt.
+  const tuningPrompt = (conversation as unknown as { customPrompt?: string | null }).customPrompt ?? null;
+  const tuningEnabled = (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? false;
+  const mergedSystemPrompt = mergeSystemPrompt(effectiveSystemPrompt, tuningPrompt, tuningEnabled);
 
   // BYOK turn: plain-text chat streamed from the user's own provider key.
   // Image/video turns stay on built-in models (owner/admin only); general-key
@@ -209,7 +214,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       });
     }
     const { messages, stats } = buildHistoryMessages(history, {
-      systemPrompt: effectiveSystemPrompt,
+      systemPrompt: mergedSystemPrompt,
       existingUserMessageId,
     });
     logger.info(
@@ -297,7 +302,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   // Token-budgeted history (payload only — DB untouched). Rebuilt from DB every
   // turn so memory survives model switches; retry slices to existingUserMessageId.
   const { messages, stats } = buildHistoryMessages(history, {
-    systemPrompt: effectiveSystemPrompt,
+    systemPrompt: mergedSystemPrompt,
     existingUserMessageId,
   });
   logger.info(

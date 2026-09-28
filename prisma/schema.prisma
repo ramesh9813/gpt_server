@@ -68,16 +68,18 @@ model Folder {
 }
 
 model Conversation {
-  id         String    @id @default(cuid())
-  userId     String
-  folderId   String?
-  title      String
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  archivedAt DateTime?
-  deletedAt  DateTime?
-  pinned     Boolean   @default(false)
-  quizAsked  Json?
+  id                  String    @id @default(cuid())
+  userId              String
+  folderId            String?
+  title               String
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  archivedAt          DateTime?
+  deletedAt           DateTime?
+  pinned              Boolean   @default(false)
+  quizAsked           Json?
+  customPrompt        String?   @db.Text @map("custom_prompt")
+  customPromptEnabled Boolean   @default(false) @map("custom_prompt_enabled")
 
   user     User      @relation(fields: [userId], references: [id])
   folder   Folder?   @relation(fields: [folderId], references: [id])

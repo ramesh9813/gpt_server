@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
+import { sanitizeTuningPrompt, TUNING_MAX_LENGTH } from "../../lib/tuning";
 
 const router = Router();
 
@@ -159,6 +160,52 @@ router.patch(
     });
   }
 );
+
+const tuningSchema = z.object({
+  customPrompt: z.string().max(2000).nullable().optional(),
+  customPromptEnabled: z.boolean().optional(),
+});
+
+router.get("/:id/tuning", requireAuth, async (req, res) => {
+  const conversation = await prisma.conversation.findFirst({
+    where: { id: req.params.id, userId: req.user!.id, deletedAt: null },
+    select: { id: true, customPrompt: true, customPromptEnabled: true },
+  });
+  if (!conversation) {
+    return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Conversation not found" } });
+  }
+  return res.json({ success: true, data: { tuning: conversation } });
+});
+
+router.patch("/:id/tuning", requireAuth, validateBody(tuningSchema), async (req, res) => {
+  const { customPrompt, customPromptEnabled } = req.body as {
+    customPrompt?: string | null;
+    customPromptEnabled?: boolean;
+  };
+  const conversation = await prisma.conversation.findFirst({
+    where: { id: req.params.id, userId: req.user!.id, deletedAt: null },
+  });
+  if (!conversation) {
+    return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Conversation not found" } });
+  }
+  const nextPromptRaw = customPrompt !== undefined ? customPrompt : (conversation as unknown as { customPrompt?: string | null }).customPrompt ?? null;
+  const nextEnabled = customPromptEnabled !== undefined ? customPromptEnabled : (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? false;
+  const sanitized = nextPromptRaw == null ? null : sanitizeTuningPrompt(nextPromptRaw);
+  // Empty prompt cannot stay enabled
+  const enabledFinal = !sanitized ? false : nextEnabled;
+  if (sanitized !== null && sanitized.length > TUNING_MAX_LENGTH) {
+    return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", message: `custom_prompt exceeds ${TUNING_MAX_LENGTH} characters` } });
+  }
+  const updated = await prisma.conversation.update({
+    where: { id: conversation.id },
+    data: {
+      customPrompt: sanitized,
+      customPromptEnabled: enabledFinal,
+    },
+    select: { id: true, customPrompt: true, customPromptEnabled: true },
+  });
+  return res.json({ success: true, data: { tuning: updated }, message: "Tuning updated" });
+});
 
 router.delete("/:id", requireAuth, async (req, res) => {
   const conversation = await prisma.conversation.findFirst({
