@@ -61,6 +61,8 @@ model Folder {
   id        String   @id @default(cuid())
   userId    String
   name      String
+  customPrompt        String?   @db.Text @map("custom_prompt")
+  customPromptEnabled Boolean   @default(true) @map("custom_prompt_enabled")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

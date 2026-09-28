@@ -66,6 +66,18 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     });
   }
 
+  // Folder-level custom prompt (inherited by every chat inside the folder):
+  // kicked off early so it resolves in parallel with the turn setup below.
+  const folderTuningPromise = (conversation as { folderId?: string | null }).folderId
+    ? prisma.folder.findFirst({
+        where: {
+          id: (conversation as { folderId?: string | null }).folderId as string,
+          userId: req.user!.id,
+        },
+        select: { customPrompt: true, customPromptEnabled: true },
+      })
+    : Promise.resolve(null);
+
   // BYOK (bring-your-own-key): x-byok-* headers mean this chat turn runs on the
   // user's own provider key (stored only in their browser) instead of the
   // server-configured OpenRouter key. Absent headers = unchanged OpenRouter path.
@@ -180,7 +192,15 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   // Per-chat tuning: merged as a guarded system block after the base prompt.
   const tuningPrompt = (conversation as unknown as { customPrompt?: string | null }).customPrompt ?? null;
   const tuningEnabled = (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? true;
-  const mergedSystemPrompt = mergeSystemPrompt(effectiveSystemPrompt, tuningPrompt, tuningEnabled);
+  // Folder prompt first (shared context for all chats inside), then the
+  // chat's own prompt refines it. Absent folder flag means enabled.
+  const folderRow = await folderTuningPromise;
+  const withFolderPrompt = mergeSystemPrompt(
+    effectiveSystemPrompt,
+    folderRow?.customPrompt ?? null,
+    folderRow?.customPromptEnabled ?? true
+  );
+  const mergedSystemPrompt = mergeSystemPrompt(withFolderPrompt, tuningPrompt, tuningEnabled);
 
   // BYOK turn: plain-text chat streamed from the user's own provider key.
   // Image/video turns stay on built-in models (owner/admin only); general-key

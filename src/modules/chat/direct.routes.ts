@@ -50,6 +50,17 @@ router.post(
       });
     }
 
+    // Folder-level custom prompt, resolved in parallel with the lookups below.
+    const folderTuningPromise = (conversation as { folderId?: string | null }).folderId
+      ? prisma.folder.findFirst({
+          where: {
+            id: (conversation as { folderId?: string | null }).folderId as string,
+            userId: req.user!.id,
+          },
+          select: { customPrompt: true, customPromptEnabled: true },
+        })
+      : Promise.resolve(null);
+
     const assistantMsg = await prisma.message.findFirst({
       where: { id: assistantMessageId, conversationId, role: "ASSISTANT" },
     });
@@ -140,7 +151,13 @@ router.post(
     );
     const tuningPrompt = (conversation as unknown as { customPrompt?: string | null }).customPrompt ?? null;
     const tuningEnabled = (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? true;
-    const mergedSystemPrompt = mergeSystemPrompt(effectiveSystemPrompt, tuningPrompt, tuningEnabled);
+    const folderRow = await folderTuningPromise;
+    const withFolderPrompt = mergeSystemPrompt(
+      effectiveSystemPrompt,
+      folderRow?.customPrompt ?? null,
+      folderRow?.customPromptEnabled ?? true
+    );
+    const mergedSystemPrompt = mergeSystemPrompt(withFolderPrompt, tuningPrompt, tuningEnabled);
     const history = await prisma.message.findMany({
       where: { conversationId },
       orderBy: { createdAt: "asc" },
