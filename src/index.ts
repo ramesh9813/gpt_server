@@ -50,12 +50,26 @@ const connectDatabaseWithRetry = async (maxAttempts = 5, delayMs = 3000) => {
 };
 
 const startServer = async () => {
-  const basePort = Number(env.PORT) || 5000;
+  // Render injects PORT (default 10000) at runtime. It must win over any
+  // local .env / default so the port scanner finds the service.
+  // See https://render.com/docs/web-services#port-binding
+  const isRender = Boolean(
+    process.env.RENDER || process.env.RENDER_EXTERNAL_URL
+  );
+  const rawPort = process.env.PORT ?? env.PORT;
+  const parsed = Number(rawPort);
+  const basePort = Number.isFinite(parsed) && parsed > 0 ? parsed : isRender ? 10000 : 5000;
   let boundPort = basePort;
   let server: import("http").Server | null = null;
 
   logger.info(
-    { url: `http://localhost:${basePort}`, externalUrl },
+    {
+      url: `http://localhost:${basePort}`,
+      externalUrl,
+      port: basePort,
+      isRender,
+      nodeEnv: process.env.NODE_ENV ?? null,
+    },
     "Starting backend server"
   );
 
