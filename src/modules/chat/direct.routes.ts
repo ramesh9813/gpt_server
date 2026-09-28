@@ -60,15 +60,24 @@ router.post(
       });
     }
 
-    const userMsg = await prisma.message.findFirst({
+    let userMsg = await prisma.message.findFirst({
       where: { id: existingUserMessageId, conversationId, role: "USER" },
     });
+    if (!userMsg) {
+      // Same stale-id tolerance as POST /api/chat/stream: fall back to the
+      // latest USER message so the browser-direct retry survives a refetch.
+      userMsg = await prisma.message.findFirst({
+        where: { conversationId, role: "USER" },
+        orderBy: { createdAt: "desc" },
+      });
+    }
     if (!userMsg) {
       return res.status(404).json({
         success: false,
         error: { code: "NOT_FOUND", message: "Message not found" },
       });
     }
+    const effectiveUserMessageId = userMsg.id;
 
     const byok = await parseByokHeadersAsync(req as any);
     if (byok && "error" in byok) {
@@ -138,7 +147,7 @@ router.post(
     });
     const { messages } = buildHistoryMessages(history, {
       systemPrompt: mergedSystemPrompt,
-      existingUserMessageId,
+      existingUserMessageId: effectiveUserMessageId,
     });
 
     await prisma.message.update({

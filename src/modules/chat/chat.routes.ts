@@ -112,15 +112,26 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   // browser-direct fallback.
   let streamUserMessageId: string | undefined = existingUserMessageId;
   if (existingUserMessageId) {
-    const existingMessage = await prisma.message.findFirst({
+    let existingMessage = await prisma.message.findFirst({
       where: { id: existingUserMessageId, conversationId, role: "USER" },
     });
+    if (!existingMessage) {
+      // Stale-id tolerance: retries/regenerations name the preceding user row
+      // from client-local state, which can be outdated after a failed turn +
+      // refetch. Fall back to the latest USER message in this conversation
+      // instead of 404ing ("Message not found") the retry.
+      existingMessage = await prisma.message.findFirst({
+        where: { conversationId, role: "USER" },
+        orderBy: { createdAt: "desc" },
+      });
+    }
     if (!existingMessage) {
       return res.status(404).json({
         success: false,
         error: { code: "NOT_FOUND", message: "Message not found" },
       });
     }
+    streamUserMessageId = existingMessage.id;
     userMsgContent = existingMessage.content;
     // Retry path: re-hydrate images/files from DB so client doesn't resend payloads.
     userImages = getStoredImages(existingMessage);
@@ -228,7 +239,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     }
     const { messages, stats } = buildHistoryMessages(history, {
       systemPrompt: mergedSystemPrompt,
-      existingUserMessageId,
+      existingUserMessageId: streamUserMessageId,
     });
     logger.info(
       { provider: byok.provider.name, model: byok.model, messages: redactForLog(messages as OpenRouterMessage[]), stats, think: think === true },
@@ -313,10 +324,11 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   // events, no new SSE type.
 
   // Token-budgeted history (payload only — DB untouched). Rebuilt from DB every
-  // turn so memory survives model switches; retry slices to existingUserMessageId.
+  // turn so memory survives model switches; retry slices to the resolved user
+  // row (streamUserMessageId), which is the fallback id when the client id was stale.
   const { messages, stats } = buildHistoryMessages(history, {
     systemPrompt: mergedSystemPrompt,
-    existingUserMessageId,
+    existingUserMessageId: streamUserMessageId,
   });
   logger.info(
     { messages: redactForLog(messages as OpenRouterMessage[]), stats },

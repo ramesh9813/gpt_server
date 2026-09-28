@@ -6,6 +6,7 @@ import type { Request, Response } from "express";
 import { prisma } from "../../lib/prisma";
 import type { ByokRequest } from "../../lib/byok";
 import { isFirewallChallengeBody } from "../../lib/byok";
+import { logger } from "../../lib/logger";
 import { generateByokFollowups } from "./followups";
 import { buildByokStreamRequest, byokErrorMessage } from "./byokRequest";
 import type { OpenRouterMessage } from "./chat.service";
@@ -125,25 +126,52 @@ export const streamByokCompletion = async (
 
   try {
     const streamReq = buildByokStreamRequest(byok, messages, { think, artifact, webSearch });
-    // Combine client disconnect + hard timeout so a slow/malicious provider cannot hold the worker forever
-    const byokTimeout = AbortSignal.timeout(90_000);
-    const combinedSignal: AbortSignal =
-      typeof AbortSignal.any === "function"
-        ? AbortSignal.any([controller.signal, byokTimeout])
-        : controller.signal;
-    // Fallback timer when AbortSignal.any is unavailable
-    let timeoutSub: ReturnType<typeof setTimeout> | null = null;
-    if (typeof (AbortSignal as unknown as { any?: unknown }).any !== "function") {
-      timeoutSub = setTimeout(() => controller.abort(), 90_000);
+    // One request sender so a transient provider blip can be retried below.
+    const doProviderFetch = () => {
+      // Combine client disconnect + hard timeout so a slow/malicious provider cannot hold the worker forever
+      const byokTimeout = AbortSignal.timeout(90_000);
+      const combinedSignal: AbortSignal =
+        typeof AbortSignal.any === "function"
+          ? AbortSignal.any([controller.signal, byokTimeout])
+          : controller.signal;
+      // Fallback timer when AbortSignal.any is unavailable
+      let timeoutSub: ReturnType<typeof setTimeout> | null = null;
+      if (typeof (AbortSignal as unknown as { any?: unknown }).any !== "function") {
+        timeoutSub = setTimeout(() => controller.abort(), 90_000);
+      }
+      return fetch(streamReq.url, {
+        method: "POST",
+        headers: streamReq.headers,
+        body: JSON.stringify(streamReq.body),
+        signal: combinedSignal,
+      }).finally(() => {
+        if (timeoutSub) clearTimeout(timeoutSub);
+      });
+    };
+    // Transient provider hiccups (rate limit / overloaded / gateway errors)
+    // are worth exactly one automatic retry — otherwise a mid-chat blip the
+    // user did nothing to cause surfaces as "No response was generated".
+    // Auth/balance/scope/model errors (401/402/403/404/422) fail immediately.
+    const isRetryableProviderStatus = (status: number) =>
+      status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+    let response = await doProviderFetch();
+    if (
+      (!response.ok || !response.body) &&
+      isRetryableProviderStatus(response.status) &&
+      !controller.signal.aborted
+    ) {
+      logger.warn(
+        { provider: provider.name, model, status: response.status },
+        "BYOK transient provider error, retrying once"
+      );
+      try {
+        await response.text();
+      } catch {
+        // best-effort drain only
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      if (!controller.signal.aborted) response = await doProviderFetch();
     }
-    const response = await fetch(streamReq.url, {
-      method: "POST",
-      headers: streamReq.headers,
-      body: JSON.stringify(streamReq.body),
-      signal: combinedSignal,
-    }).finally(() => {
-      if (timeoutSub) clearTimeout(timeoutSub);
-    });
 
     if (!response.ok || !response.body) {
       const errorText = response.body ? await response.text() : "no response body";
