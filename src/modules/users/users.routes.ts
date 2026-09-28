@@ -18,7 +18,9 @@ const settingsSchema = z.object({
   imageModel: z.string().min(1).max(200).optional(),
   videoModel: z.string().min(1).max(200).optional(),
   appFontSize: z.number().int().min(12).max(22).optional(),
-  iconScale: z.number().min(0.8).max(1.6).optional()
+  iconScale: z.number().min(0.8).max(1.6).optional(),
+  devicePhotosFolder: z.string().max(512).nullable().optional(),
+  deviceScreenshotsFolder: z.string().max(512).nullable().optional()
 });
 
 router.get("/", requireAuth, async (req, res) => {
@@ -62,10 +64,24 @@ router.patch(
   async (req, res) => {
     // Explicit pick — never pass req.body through to Prisma (mass-assignment guard).
     const allowed: Record<string, unknown> = {};
+    const normalizeFolder = (value: unknown): string | null | undefined => {
+      if (value === null) return null;
+      if (typeof value !== "string") return undefined;
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      return trimmed.slice(0, 512);
+    };
+    const folderFields = ["devicePhotosFolder", "deviceScreenshotsFolder"] as const;
     const fields = ["theme", "fontScale", "brand", "pinHeader", "model", "imageModel", "videoModel", "appFontSize", "iconScale"] as const;
     for (const k of fields) {
       if ((req.body as Record<string, unknown>)[k] !== undefined) {
         allowed[k] = (req.body as Record<string, unknown>)[k];
+      }
+    }
+    for (const k of folderFields) {
+      if ((req.body as Record<string, unknown>)[k] !== undefined) {
+        const normalized = normalizeFolder((req.body as Record<string, unknown>)[k]);
+        if (normalized !== undefined) allowed[k] = normalized;
       }
     }
     let settings;
@@ -79,7 +95,7 @@ router.patch(
       // retry without the new fields instead of failing the whole save.
       const code = (err as { code?: string })?.code;
       if ((code === "P2022" || code === "P2003") && Object.keys(allowed).length > 0) {
-        const { appFontSize: _a, iconScale: _i, imageModel: _m, videoModel: _v, ...rest } = allowed as Record<string, unknown>;
+        const { appFontSize: _a, iconScale: _i, imageModel: _m, videoModel: _v, devicePhotosFolder: _p, deviceScreenshotsFolder: _s, ...rest } = allowed as Record<string, unknown>;
         settings = await prisma.userSettings.update({
           where: { userId: req.user!.id },
           data: rest

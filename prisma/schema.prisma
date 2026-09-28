@@ -36,20 +36,22 @@ model User {
 }
 
 model UserSettings {
-  id          String    @id @default(cuid())
-  userId      String    @unique
-  theme       String    @default("SYSTEM")
-  accentColor String    @default("#74aa9c")
-  fontScale   String    @default("DEFAULT")
-  brand       String    @default("default")
-  model       String    @default("default")
-  imageModel  String    @default("default")
-  videoModel  String    @default("default")
-  pinHeader   Boolean   @default(false)
-  appFontSize Int       @default(18)
-  iconScale   Float     @default(1)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id                      String    @id @default(cuid())
+  userId                  String    @unique
+  theme                   String    @default("SYSTEM")
+  accentColor             String    @default("#74aa9c")
+  fontScale               String    @default("DEFAULT")
+  brand                   String    @default("default")
+  model                   String    @default("default")
+  imageModel              String    @default("default")
+  videoModel              String    @default("default")
+  pinHeader               Boolean   @default(false)
+  appFontSize             Int       @default(18)
+  iconScale               Float     @default(1)
+  devicePhotosFolder      String?   @map("device_photos_folder")
+  deviceScreenshotsFolder String?   @map("device_screenshots_folder")
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id])
 }
