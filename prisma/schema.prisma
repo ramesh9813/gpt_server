@@ -82,7 +82,7 @@ model Conversation {
   pinned              Boolean   @default(false)
   quizAsked           Json?
   customPrompt        String?   @db.Text @map("custom_prompt")
-  customPromptEnabled Boolean   @default(false) @map("custom_prompt_enabled")
+  customPromptEnabled Boolean   @default(true) @map("custom_prompt_enabled")
 
   user     User      @relation(fields: [userId], references: [id])
   folder   Folder?   @relation(fields: [folderId], references: [id])

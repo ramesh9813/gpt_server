@@ -189,7 +189,7 @@ router.patch("/:id/tuning", requireAuth, validateBody(tuningSchema), async (req,
     return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Conversation not found" } });
   }
   const nextPromptRaw = customPrompt !== undefined ? customPrompt : (conversation as unknown as { customPrompt?: string | null }).customPrompt ?? null;
-  const nextEnabled = customPromptEnabled !== undefined ? customPromptEnabled : (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? false;
+  const nextEnabled = customPromptEnabled !== undefined ? customPromptEnabled : (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? true;
   const sanitized = nextPromptRaw == null ? null : sanitizeTuningPrompt(nextPromptRaw);
   // Empty prompt cannot stay enabled
   const enabledFinal = !sanitized ? false : nextEnabled;

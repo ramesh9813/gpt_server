@@ -139,7 +139,7 @@ router.post(
       { userMsgContent: userMsg.content, artifact }
     );
     const tuningPrompt = (conversation as unknown as { customPrompt?: string | null }).customPrompt ?? null;
-    const tuningEnabled = (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? false;
+    const tuningEnabled = (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? true;
     const mergedSystemPrompt = mergeSystemPrompt(effectiveSystemPrompt, tuningPrompt, tuningEnabled);
     const history = await prisma.message.findMany({
       where: { conversationId },

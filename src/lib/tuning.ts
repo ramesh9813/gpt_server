@@ -32,7 +32,8 @@ export const formatTuningBlock = (sanitized: string): string => {
 };
 
 export const isTuningActive = (enabled: unknown, prompt: unknown): boolean => {
-  if (enabled !== true) return false;
+  // Default ON: only an explicit false disables.
+  if (enabled === false) return false;
   const s = typeof prompt === "string" ? prompt.trim() : "";
   return s.length > 0;
 };
@@ -53,7 +54,7 @@ export const mergeSystemPrompt = (
 
 export const tuningEnabledFromRow = (row: unknown): boolean => {
   const v = (row as { customPromptEnabled?: unknown })?.customPromptEnabled;
-  return v === true;
+  return v !== false;
 };
 
 export const tuningPromptFromRow = (row: unknown): string | null => {

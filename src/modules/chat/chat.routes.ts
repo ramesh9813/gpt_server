@@ -177,7 +177,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   ]);
   // Per-chat tuning: merged as a guarded system block after the base prompt.
   const tuningPrompt = (conversation as unknown as { customPrompt?: string | null }).customPrompt ?? null;
-  const tuningEnabled = (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? false;
+  const tuningEnabled = (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? true;
   const mergedSystemPrompt = mergeSystemPrompt(effectiveSystemPrompt, tuningPrompt, tuningEnabled);
 
   // BYOK turn: plain-text chat streamed from the user's own provider key.
