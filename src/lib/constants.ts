@@ -12,6 +12,14 @@ export const MAX_IMAGES = 5 as const;
 export const MAX_IMAGE_STRING_LENGTH = 12 * 1024 * 1024; // ~12MB base64 string (full-res) — fits 40mb body for 5×
 export const IMAGE_ALLOWED_MIME = /^(jpeg|jpg|png|webp|gif)$/i;
 
+// ---------- File attachments ----------
+export const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
+export const MAX_FILES = 5 as const;
+export const MAX_FILE_NAME_LENGTH = 255 as const;
+export const MAX_FILE_CONTENT_CHARS = 80_000 as const; // per file before truncation notice
+export const MAX_FILES_TOTAL_CHARS = 120_000 as const;
+export const FILE_BODY_LIMIT = "40mb" as const;
+
 // ---------- Runner ----------
 export const RUNNER_OUTPUT_TRUNCATE_AT = 50_000 as const;
 export const SUPPORTED_RUN_LANGUAGES = [

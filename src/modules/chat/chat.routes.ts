@@ -7,8 +7,10 @@ import { resolveEffectiveSystemPrompt, wantsArtifact } from "./artifact";
 import { mergeSystemPrompt } from "../../lib/tuning";
 import { logger } from "../../lib/logger";
 import {
+  getStoredFiles,
   getStoredImages,
   redactForLog,
+  resolveUserPromptForTurn,
   sendImageReply,
   sendMcqReply,
   sendSimpleTextFinish,
@@ -33,6 +35,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     userMessage,
     existingUserMessageId,
     images,
+    files,
     model,
     systemPrompt,
     research,
@@ -44,6 +47,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     userMessage?: string;
     existingUserMessageId?: string;
     images?: string[];
+    files?: Array<{ name: string; mime: string; size: number; content: string }>;
     model?: string;
     systemPrompt?: string;
     research?: boolean;
@@ -102,6 +106,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
 
   let userMsgContent = userMessage || "";
   let userImages: string[] = Array.isArray(images) ? images : [];
+  let userFiles: Array<{ name: string; mime: string; size: number; content: string }> = Array.isArray(files) ? files : [];
   // Real user-row id for this turn (retry path) or created below (fresh
   // path) — forwarded so failure events can name both rows for the
   // browser-direct fallback.
@@ -117,21 +122,29 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       });
     }
     userMsgContent = existingMessage.content;
-    // Retry path: re-hydrate images from DB so client doesn't resend base64.
-    // Request images (if any) are ignored when existingUserMessageId is set.
+    // Retry path: re-hydrate images/files from DB so client doesn't resend payloads.
     userImages = getStoredImages(existingMessage);
-  } else if (userMessage || userImages.length > 0) {
+    userFiles = getStoredFiles(existingMessage);
+  } else if (userMessage || userImages.length > 0 || userFiles.length > 0) {
+    const prompt = resolveUserPromptForTurn(userMessage, userFiles);
+    const filesMeta = userFiles.length > 0
+      ? userFiles.map((f) => ({ name: f.name, mime: f.mime, size: f.size }))
+      : undefined;
     const createdUserMsg = await prisma.message.create({
       data: {
         conversationId,
         role: "USER",
-        content: userMessage ?? "",
+        content: prompt,
         images: userImages.length > 0 ? userImages : undefined,
+        // Persist only file metas on the row content (full text already expanded
+        // into prompt). Keep lightweight; client already rendered the strip.
+        ...(filesMeta ? { files: filesMeta as any } : {}),
         status: "COMPLETE",
-      },
+      } as any,
     });
     streamUserMessageId = createdUserMsg.id;
-    userMsgContent = userMessage ?? "";
+    // Drive all intent/history off the expanded prompt so files are visible.
+    userMsgContent = prompt;
   }
 
   // Non-critical: derive title in background so it never delays TTFB.

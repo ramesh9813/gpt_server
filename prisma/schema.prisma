@@ -113,6 +113,8 @@ model Message {
   // Web-search turns: flag + cited sources [{ title, url }] for the Sources UI.
   usedSearch     Boolean       @default(false)
   sources        Json?
+  // File chat: metadata for user-attached files shown in the bubble.
+  files          Json?
 
   conversation Conversation @relation(fields: [conversationId], references: [id])
 

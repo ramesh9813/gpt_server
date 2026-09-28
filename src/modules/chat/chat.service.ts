@@ -9,6 +9,8 @@ import {
   type LlmToolDef,
 } from "../llm/toolBridge";
 import { imageDataUrlSchema, MAX_IMAGES } from "../../lib/imageValidation";
+import { fileAttachmentsSchema } from "../../lib/fileAttachments";
+import { combineFilesIntoPrompt } from "../../lib/fileAttachments";
 import { TOKEN } from "../../lib/constants";
 
 export const streamSchema = z
@@ -17,6 +19,7 @@ export const streamSchema = z
     userMessage: z.string().min(1).max(8000).optional(),
     existingUserMessageId: z.string().min(1).optional(),
     images: z.array(imageDataUrlSchema).max(MAX_IMAGES).optional(),
+    files: fileAttachmentsSchema,
     model: z.string().min(1).max(200).optional(),
     systemPrompt: z.string().max(8000).optional(),
     research: z.boolean().optional(),
@@ -24,8 +27,8 @@ export const streamSchema = z
     webSearch: z.boolean().optional(),
     think: z.boolean().optional(),
   })
-  .refine((data) => data.userMessage || data.existingUserMessageId || (data.images && data.images.length > 0), {
-    message: "userMessage or existingUserMessageId or images is required",
+  .refine((data) => data.userMessage || data.existingUserMessageId || (data.images && data.images.length > 0) || (Array.isArray((data as any).files) && (data as any).files.length > 0), {
+    message: "userMessage or existingUserMessageId or images or files is required",
   })
   .refine((data) => !(data.userMessage && data.existingUserMessageId), {
     message: "Provide either userMessage or existingUserMessageId",
@@ -54,6 +57,23 @@ export const getStoredImages = (msg: unknown): string[] => {
   const raw = (msg as { images?: unknown }).images;
   if (!Array.isArray(raw)) return [];
   return raw.filter((v): v is string => typeof v === "string" && v.startsWith("data:image/"));
+};
+
+export const getStoredFiles = (msg: unknown): Array<{ name: string; mime: string; size: number; content: string }> => {
+  const raw = (msg as { files?: unknown }).files;
+  if (!Array.isArray(raw)) return [];
+  return (raw as any[]).filter(
+    (v) => v && typeof v.name === "string" && typeof v.content === "string"
+  ) as any;
+};
+
+export const resolveUserPromptForTurn = (
+  userMessage: string | undefined,
+  files: Array<{ name: string; mime: string; size: number; content: string }> | undefined
+): string => {
+  const list = Array.isArray(files) ? files : [];
+  if (list.length === 0) return userMessage ?? "";
+  return combineFilesIntoPrompt(userMessage ?? "", list as any);
 };
 
 // Avoid dumping multi-MB base64 into logs.
