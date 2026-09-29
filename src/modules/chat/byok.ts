@@ -201,6 +201,10 @@ export const streamByokCompletion = async (
     // get exactly one text-only retry so image sends still answer instead of
     // dying as "No response was generated". Vision-capable models never reach
     // here — the first attempt succeeds untouched.
+    // consumedError carries an already-read body into the final fail below:
+    // re-reading it would throw "Body has already been read" and mask the
+    // real provider error as Groq error (0).
+    let consumedError: string | null = null;
     if (
       !response.ok &&
       provider.kind === "openai" &&
@@ -210,6 +214,7 @@ export const streamByokCompletion = async (
       let visionError = "";
       try {
         visionError = await response.text();
+        consumedError = visionError;
       } catch {
         // best-effort drain only
       }
@@ -236,7 +241,8 @@ export const streamByokCompletion = async (
     }
 
     if (!response.ok || !response.body) {
-      const errorText = response.body ? await response.text() : "no response body";
+      const errorText =
+        consumedError ?? (response.body ? await response.text() : "no response body");
       return fail(response.status, errorText);
     }
 
