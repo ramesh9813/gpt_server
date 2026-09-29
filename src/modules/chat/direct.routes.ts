@@ -6,7 +6,7 @@ import { validateBody } from "../../middleware/validate";
 import { parseByokHeadersAsync } from "../../lib/providers";
 import { resolveEffectiveSystemPrompt } from "./artifact";
 import { mergeSystemPrompt } from "../../lib/tuning";
-import { buildHistoryMessages } from "./history";
+import { buildHistoryMessages, resolveHistoryBudget } from "./history";
 import { wantsMcq } from "./mcq";
 import { wantsImageGeneration, wantsVideo } from "./intents";
 import type { OpenRouterMessage } from "./chat.service";
@@ -18,6 +18,7 @@ const prepareSchema = z.object({
   assistantMessageId: z.string(),
   existingUserMessageId: z.string(),
   artifact: z.boolean().optional(),
+  compactHistory: z.boolean().optional(),
 });
 
 // POST /api/chat/direct-prepare — browser-direct fallback for firewalled
@@ -38,6 +39,7 @@ router.post(
       assistantMessageId,
       existingUserMessageId,
       artifact,
+      compactHistory,
     } = req.body as z.infer<typeof prepareSchema>;
 
     const conversation = await prisma.conversation.findFirst({
@@ -165,6 +167,7 @@ router.post(
     const { messages } = buildHistoryMessages(history, {
       systemPrompt: mergedSystemPrompt,
       existingUserMessageId: effectiveUserMessageId,
+      charBudget: resolveHistoryBudget(byok.provider.id, compactHistory === true),
     });
 
     await prisma.message.update({

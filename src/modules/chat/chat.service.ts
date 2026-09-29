@@ -27,6 +27,7 @@ export const streamSchema = z
     artifact: z.boolean().optional(),
     webSearch: z.boolean().optional(),
     think: z.boolean().optional(),
+    compactHistory: z.boolean().optional(),
   })
   .refine((data) => data.userMessage || data.existingUserMessageId || (data.images && data.images.length > 0) || (Array.isArray((data as any).files) && (data as any).files.length > 0), {
     message: "userMessage or existingUserMessageId or images or files is required",

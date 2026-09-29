@@ -1,7 +1,7 @@
 // Token-budgeted conversation history (payload only — DB untouched).
 // Rebuilt from DB every turn, never cached per model, so memory survives
 // model switches. Image bytes never count toward the char budget.
-import { HISTORY } from "../../lib/constants";
+import { HISTORY, LOW_HISTORY_BUDGET_PROVIDERS } from "../../lib/constants";
 import { prisma } from "../../lib/prisma";
 
 export type OpenRouterTextPart = { type: "text"; text: string };
@@ -19,6 +19,21 @@ export type BuildHistoryOpts = {
 export type HistoryStats = { promptChars: number; imageCount: number; droppedImages: number; truncated: number };
 export const DEFAULT_RECENT_KEEP = HISTORY.DEFAULT_RECENT_KEEP;
 export const DEFAULT_CHAR_BUDGET = HISTORY.DEFAULT_CHAR_BUDGET;
+
+// Effective history budget for a turn: low-tier providers (tight per-minute
+// input caps) get the tight budget; an explicit compactHistory request
+// (client auto-trim near the limit) clamps to the emergency budget.
+export const resolveHistoryBudget = (
+  providerId?: string | null,
+  compact?: boolean
+): number => {
+  const base =
+    providerId &&
+    LOW_HISTORY_BUDGET_PROVIDERS.includes(providerId.trim().toLowerCase())
+      ? HISTORY.TIGHT_CHAR_BUDGET
+      : HISTORY.DEFAULT_CHAR_BUDGET;
+  return compact ? Math.min(base, HISTORY.COMPACT_CHAR_BUDGET) : base;
+};
 const LONG_LIMIT = HISTORY.LONG_LIMIT;
 const HEAD_LEN = HISTORY.HEAD_LEN;
 const TAIL_LEN = HISTORY.TAIL_LEN;
