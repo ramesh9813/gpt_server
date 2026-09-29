@@ -164,6 +164,47 @@ export const byokErrorMessage = (
   return `${providerName} error (${status}):${cause ? ` ${cause}` : ""}${detail ? ` ${detail}` : ""}`;
 };
 
+// ---- vision fallback (pure, unit-tested) --------------------------------------
+
+// Some OpenAI-compatible providers/models reject multimodal array content
+// outright (e.g. Groq 400 "messages[15].content must be a string" on
+// text-only models). Vision-capable models accept the parts untouched, so
+// the first attempt always sends images normally — these helpers only shape
+// the one text-only retry.
+export const hasMultimodalContent = (
+  messages: OpenRouterMessage[]
+): boolean =>
+  messages.some((m) => Array.isArray(m.content));
+
+// Matches provider rejections of array content (Groq "content must be a
+// string", generic invalid-content/image/vision/multimodal 400s).
+export const isVisionRejection = (status: number, errorText: string): boolean => {
+  if (status !== 400) return false;
+  return /must be a string|invalid[^.]{0,60}content|content[^.]{0,60}invalid|image|vision|multimodal/i.test(
+    errorText.slice(0, 1000)
+  );
+};
+
+// Collapse array content to plain text: keep text parts, note dropped images.
+export const stripImageParts = (
+  messages: OpenRouterMessage[]
+): OpenRouterMessage[] =>
+  messages.map((m) => {
+    if (!Array.isArray(m.content)) return m;
+    const texts = (m.content as Array<{ type: string; text?: string }>)
+      .filter((p) => p?.type === "text" && typeof p.text === "string")
+      .map((p) => (p as { text: string }).text);
+    const images = (m.content as unknown[]).length - texts.length;
+    const text = texts.join("\n").trim() || "Describe the attached image(s) in detail.";
+    return {
+      ...m,
+      content:
+        images > 0
+          ? `${text}\n[attached image${images > 1 ? "s" : ""} omitted — this model accepts text only]`
+          : text,
+    };
+  });
+
 // ---- request building (pure, unit-tested per provider) -----------------------
 
 export const buildByokStreamRequest = (

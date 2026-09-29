@@ -2,7 +2,7 @@
 // in practice: strict gateways 422ing on stream_options, wrong endpoints for
 // Gemini/Anthropic, missing thinking/web-search wiring, wrong auth headers.
 import { BYOK_PROVIDERS, parseByokHeaders, type ByokProviderId } from "../src/lib/byok";
-import { buildByokStreamRequest, byokErrorMessage } from "../src/modules/chat/byokRequest";
+import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisionRejection, stripImageParts } from "../src/modules/chat/byokRequest";
 import type { OpenRouterMessage } from "../src/modules/chat/chat.service";
 
 const MESSAGES: OpenRouterMessage[] = [
@@ -193,5 +193,40 @@ describe("buildByokStreamRequest per provider", () => {
     const msgs = req.body.messages as Array<{ role: string; content: unknown[] }>;
     expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
     expect((msgs[2].content as any[]).length).toBe(2);
+  });
+});
+
+describe("vision fallback helpers", () => {
+  const multimodal: OpenRouterMessage[] = [
+    { role: "user", content: "look at this" },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "what is this?" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+      ],
+    },
+  ];
+
+  it("detects array content", () => {
+    expect(hasMultimodalContent([{ role: "user", content: "hi" }])).toBe(false);
+    expect(hasMultimodalContent(multimodal)).toBe(true);
+  });
+
+  it("matches Groq-style content rejections only on 400", () => {
+    expect(
+      isVisionRejection(400, "messages[15].content must be a string")
+    ).toBe(true);
+    expect(isVisionRejection(400, "Invalid image content")).toBe(true);
+    expect(isVisionRejection(401, "messages[15].content must be a string")).toBe(false);
+    expect(isVisionRejection(400, "Rate limited")).toBe(false);
+  });
+
+  it("strips image parts to text with a note, leaves strings alone", () => {
+    const out = stripImageParts(multimodal);
+    expect(out[0]).toEqual(multimodal[0]);
+    expect(out[1].content).toContain("what is this?");
+    expect(out[1].content).toContain("accepts text only");
+    expect(Array.isArray(out[1].content)).toBe(false);
   });
 });

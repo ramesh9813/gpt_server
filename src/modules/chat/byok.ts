@@ -8,7 +8,7 @@ import type { ByokRequest } from "../../lib/byok";
 import { isFirewallChallengeBody } from "../../lib/byok";
 import { logger } from "../../lib/logger";
 import { generateByokFollowups } from "./followups";
-import { buildByokStreamRequest, byokErrorMessage } from "./byokRequest";
+import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisionRejection, stripImageParts } from "./byokRequest";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
 import { appendSourcesFooter, buildSearchContextBlock, performWebSearch } from "../../lib/websearch";
@@ -151,7 +151,7 @@ export const streamByokCompletion = async (
   try {
     const streamReq = buildByokStreamRequest(byok, searchMessages, { think, artifact, webSearch });
     // One request sender so a transient provider blip can be retried below.
-    const doProviderFetch = () => {
+    const doProviderFetch = (req = streamReq) => {
       // Combine client disconnect + hard timeout so a slow/malicious provider cannot hold the worker forever
       const byokTimeout = AbortSignal.timeout(90_000);
       const combinedSignal: AbortSignal =
@@ -163,10 +163,10 @@ export const streamByokCompletion = async (
       if (typeof (AbortSignal as unknown as { any?: unknown }).any !== "function") {
         timeoutSub = setTimeout(() => controller.abort(), 90_000);
       }
-      return fetch(streamReq.url, {
+      return fetch(req.url, {
         method: "POST",
-        headers: streamReq.headers,
-        body: JSON.stringify(streamReq.body),
+        headers: req.headers,
+        body: JSON.stringify(req.body),
         signal: combinedSignal,
       }).finally(() => {
         if (timeoutSub) clearTimeout(timeoutSub);
@@ -195,6 +195,44 @@ export const streamByokCompletion = async (
       }
       await new Promise((resolve) => setTimeout(resolve, 1500));
       if (!controller.signal.aborted) response = await doProviderFetch();
+    }
+    // Vision fallback: OpenAI-compatible providers whose models reject
+    // multimodal array content (e.g. Groq 400 "content must be a string")
+    // get exactly one text-only retry so image sends still answer instead of
+    // dying as "No response was generated". Vision-capable models never reach
+    // here — the first attempt succeeds untouched.
+    if (
+      !response.ok &&
+      provider.kind === "openai" &&
+      hasMultimodalContent(searchMessages) &&
+      !controller.signal.aborted
+    ) {
+      let visionError = "";
+      try {
+        visionError = await response.text();
+      } catch {
+        // best-effort drain only
+      }
+      if (isVisionRejection(response.status, visionError)) {
+        logger.warn(
+          { provider: provider.name, model, status: response.status },
+          "BYOK provider rejects image content, retrying text-only once"
+        );
+        const textReq = buildByokStreamRequest(byok, stripImageParts(searchMessages), {
+          think,
+          artifact,
+          webSearch,
+        });
+        if (!controller.signal.aborted) {
+          response = await doProviderFetch(textReq);
+          if (response.ok && response.body) {
+            sendEvent("notice", {
+              message:
+                "This model can't view images — answered from your text only. Pick a vision-capable model to discuss the picture.",
+            });
+          }
+        }
+      }
     }
 
     if (!response.ok || !response.body) {
