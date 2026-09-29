@@ -12,6 +12,7 @@ import { imageDataUrlSchema, MAX_IMAGES } from "../../lib/imageValidation";
 import { fileAttachmentsSchema } from "../../lib/fileAttachments";
 import { combineFilesIntoPrompt } from "../../lib/fileAttachments";
 import { TOKEN } from "../../lib/constants";
+import { appendSourcesFooter, buildSearchContextBlock, performWebSearch } from "../../lib/websearch";
 
 export const streamSchema = z
   .object({
@@ -212,6 +213,40 @@ export const streamOpenRouterCompletion = async (
   const { logger: svcLogger } = await import("../../lib/logger");
   svcLogger.info({ messages: redactForLog(messages) }, "Sending messages to OpenRouter");
 
+  // Universal search: server-side DuckDuckGo runs for EVERY model (no API
+  // key, no provider-native tool needed). Results are injected into the
+  // prompt AND pre-seeded into sourceMap so URLs land at the bottom even
+  // when the model emits no url_citation annotations.
+  let searchMessages = messages;
+  if (webSearch === true && research !== true) {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const rawQuery =
+      typeof lastUser?.content === "string"
+        ? lastUser.content
+        : Array.isArray(lastUser?.content)
+          ? (lastUser.content as any[]).filter((p) => p?.type === "text").map((p) => p.text).join("\n")
+          : "";
+    const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+    if (query) {
+      try {
+        const hits = await performWebSearch(query, 5);
+        for (const h of hits) {
+          if (!sourceMap.has(h.url)) sourceMap.set(h.url, { url: h.url, title: h.title });
+        }
+        if (hits.length > 0) {
+          const block = buildSearchContextBlock(query, hits);
+          searchMessages = [
+            { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${block}` },
+            ...messages,
+          ];
+        }
+      } catch (err) {
+        const { logger: svcLogger2 } = await import("../../lib/logger");
+        svcLogger2.warn({ err }, "Universal web search failed, continuing without results");
+      }
+    }
+  }
+
   // One streamed completion turn. Appends text/reasoning into the shared
   // buffers (persisted + forwarded live) and collects tool_calls deltas.
   // terminal:true means an error was already sent — the caller must return.
@@ -381,7 +416,7 @@ export const streamOpenRouterCompletion = async (
   };
 
   try {
-    let turnMessages = messages;
+    let turnMessages = searchMessages;
     let usage: any = null;
     // At most one tool round-trip: turn 0 may request connector calls, turn
     // 1 streams the final answer with their results in context. When no
@@ -455,6 +490,12 @@ export const streamOpenRouterCompletion = async (
       ] as unknown as OpenRouterMessage[];
     }
     const sources = [...sourceMap.values()];
+    // Footer guarantees searched-page URLs at the bottom of the bubble.
+    const withFooter = appendSourcesFooter(assistantContent, sources);
+    if (withFooter !== assistantContent) {
+      sendEvent("token", { delta: withFooter.slice(assistantContent.length) });
+      assistantContent = withFooter;
+    }
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: {

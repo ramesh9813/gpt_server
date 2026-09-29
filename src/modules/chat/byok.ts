@@ -10,6 +10,8 @@ import { logger } from "../../lib/logger";
 import { generateByokFollowups } from "./followups";
 import { buildByokStreamRequest, byokErrorMessage } from "./byokRequest";
 import type { OpenRouterMessage } from "./chat.service";
+import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
+import { appendSourcesFooter, buildSearchContextBlock, performWebSearch } from "../../lib/websearch";
 
 // ---- entry point ------------------------------------------------------------
 
@@ -66,15 +68,37 @@ export const streamByokCompletion = async (
   let assistantReasoning = "";
   let lastPersistedLength = 0;
   let lastPersistedAt = Date.now();
-  // Web-search citations (OpenRouter url_citation annotations) + one-shot
-  // notice when the user's provider can't run web search at all.
+  // Universal search: same server-side DuckDuckGo injection as the built-in
+  // path, so EVERY provider (OpenAI-compat, Gemini, Anthropic, custom) gets
+  // live results + bottom URL list. No native tool required.
+  let searchMessages = messages;
   const sourceMap = new Map<string, { title: string; url: string }>();
-  const webSearchSupported = provider.id === "openrouter";
-  if (webSearch === true && !webSearchSupported) {
-    sendEvent("notice", {
-      message:
-        "Web search isn't available with your provider key — answering from general knowledge.",
-    });
+  if (webSearch === true) {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const rawQuery =
+      typeof lastUser?.content === "string"
+        ? lastUser.content
+        : Array.isArray(lastUser?.content)
+          ? (lastUser.content as any[]).filter((p) => p?.type === "text").map((p) => p.text).join("\n")
+          : "";
+    const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+    if (query) {
+      try {
+        const hits = await performWebSearch(query, 5);
+        for (const h of hits) {
+          if (!sourceMap.has(h.url)) sourceMap.set(h.url, { url: h.url, title: h.title });
+        }
+        if (hits.length > 0) {
+          const block = buildSearchContextBlock(query, hits);
+          searchMessages = [
+            { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${block}` },
+            ...messages,
+          ];
+        }
+      } catch (err) {
+        logger.warn({ err }, "Universal BYOK web search failed, continuing without results");
+      }
+    }
   }
 
   const persistProgress = async () => {
@@ -125,7 +149,7 @@ export const streamByokCompletion = async (
   };
 
   try {
-    const streamReq = buildByokStreamRequest(byok, messages, { think, artifact, webSearch });
+    const streamReq = buildByokStreamRequest(byok, searchMessages, { think, artifact, webSearch });
     // One request sender so a transient provider blip can be retried below.
     const doProviderFetch = () => {
       // Combine client disconnect + hard timeout so a slow/malicious provider cannot hold the worker forever
@@ -368,6 +392,12 @@ export const streamByokCompletion = async (
     }
 
     const sources = [...sourceMap.values()];
+    // Footer guarantees searched-page URLs at the bottom of the bubble.
+    const withFooter = appendSourcesFooter(assistantContent, sources);
+    if (withFooter !== assistantContent) {
+      sendEvent("token", { delta: withFooter.slice(assistantContent.length) });
+      assistantContent = withFooter;
+    }
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: {
