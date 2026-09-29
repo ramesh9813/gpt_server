@@ -43,9 +43,10 @@ const updateMessageSchema = z
     (data) =>
       data.content !== undefined ||
       data.quiz !== undefined ||
-      data.images !== undefined,
+      data.images !== undefined ||
+      data.pruneFollowing === true,
     {
-      message: "content, quiz or images is required",
+      message: "content, quiz, images or pruneFollowing is required",
     }
   );
 
@@ -155,10 +156,32 @@ router.patch(
     const wantsContent = (req.body as { content?: unknown }).content !== undefined;
     const wantsQuiz = (req.body as { quiz?: unknown }).quiz !== undefined;
     const wantsImages = (req.body as { images?: unknown }).images !== undefined;
+    const wantsPrune = (req.body as { pruneFollowing?: unknown }).pruneFollowing === true;
     if ((wantsContent || wantsImages) && message.role !== "USER") {
       return res.status(404).json({
         success: false,
         error: { code: "NOT_FOUND", message: "Message not found" },
+      });
+    }
+
+    // Prune-only (regenerate/resend on an assistant row): no content edits,
+    // any role allowed — just drop everything below so the retry is last chat.
+    if (wantsPrune && !wantsContent && !wantsQuiz && !wantsImages) {
+      const result = await prisma.message.deleteMany({
+        where: {
+          conversationId,
+          createdAt: { gt: message.createdAt },
+        },
+      });
+
+      await prisma.conversation.update({
+        where: { id: conversationId },
+        data: { updatedAt: new Date() },
+      });
+
+      return res.json({
+        success: true,
+        data: { message, pruned: result.count },
       });
     }
 
