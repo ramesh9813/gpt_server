@@ -11,7 +11,7 @@ import { generateByokFollowups } from "./followups";
 import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisionRejection, stripImageParts } from "./byokRequest";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
-import { appendSourcesFooter, buildSearchContextBlock, performWebSearch } from "../../lib/websearch";
+import { buildSearchContextBlock, performWebSearch } from "../../lib/websearch";
 
 // ---- entry point ------------------------------------------------------------
 
@@ -430,12 +430,8 @@ export const streamByokCompletion = async (
     }
 
     const sources = [...sourceMap.values()];
-    // Footer guarantees searched-page URLs at the bottom of the bubble.
-    const withFooter = appendSourcesFooter(assistantContent, sources);
-    if (withFooter !== assistantContent) {
-      sendEvent("token", { delta: withFooter.slice(assistantContent.length) });
-      assistantContent = withFooter;
-    }
+    // Bottom links render from the persisted `sources` row (client plain
+    // list) — no body footer, so URLs never appear twice.
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: {

@@ -12,7 +12,7 @@ import { imageDataUrlSchema, MAX_IMAGES } from "../../lib/imageValidation";
 import { fileAttachmentsSchema } from "../../lib/fileAttachments";
 import { combineFilesIntoPrompt } from "../../lib/fileAttachments";
 import { TOKEN } from "../../lib/constants";
-import { appendSourcesFooter, buildSearchContextBlock, performWebSearch } from "../../lib/websearch";
+import { buildSearchContextBlock, performWebSearch } from "../../lib/websearch";
 
 export const streamSchema = z
   .object({
@@ -491,12 +491,8 @@ export const streamOpenRouterCompletion = async (
       ] as unknown as OpenRouterMessage[];
     }
     const sources = [...sourceMap.values()];
-    // Footer guarantees searched-page URLs at the bottom of the bubble.
-    const withFooter = appendSourcesFooter(assistantContent, sources);
-    if (withFooter !== assistantContent) {
-      sendEvent("token", { delta: withFooter.slice(assistantContent.length) });
-      assistantContent = withFooter;
-    }
+    // Bottom links render from the persisted `sources` row (client plain
+    // list) — no body footer, so URLs never appear twice.
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: {

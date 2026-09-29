@@ -109,7 +109,34 @@ export const performWebSearch = async (query: string, max = 5): Promise<WebResul
     // fall through to instant-answer fallback
   }
   // 2) Instant-answer fallback (abstract + related) — no scraping.
-  return (await ddgInstantAnswer(q)).slice(0, max);
+  const instant = await ddgInstantAnswer(q);
+  if (instant.length > 0) return instant.slice(0, max);
+  // 3) Wikipedia fallback — reliable API, real page URLs, so a searched
+  // answer almost always has bottom links even when DuckDuckGo is blocked.
+  return wikipediaSearch(q, max);
+};
+
+// Wikipedia opensearch-style fallback via the query API (no key needed).
+const wikipediaSearch = async (query: string, max: number): Promise<WebResult[]> => {
+  try {
+    const res = await fetch(
+      `https://en.wikipedia.org/w/api.php?action=query&format=json&list=search&srsearch=${encodeURIComponent(query)}&srlimit=${max}&origin=*`,
+      { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(8000) }
+    );
+    if (!res.ok) return [];
+    const j = (await res.json()) as any;
+    const arr = Array.isArray(j?.query?.search) ? j.query.search : [];
+    return arr.slice(0, max).map((r: any) => {
+      const title = String(r?.title ?? query).slice(0, 200);
+      return {
+        title,
+        url: `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}`,
+        snippet: String(r?.snippet ?? "").replace(/<[^>]*>/g, "").slice(0, 400),
+      };
+    });
+  } catch {
+    return [];
+  }
 };
 
 // Prompt block injected ahead of the model call so even providers with no
