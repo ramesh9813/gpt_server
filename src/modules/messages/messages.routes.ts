@@ -8,7 +8,7 @@ import { imagesSchema } from "../../lib/imageValidation";
 const router = Router();
 
 const createMessageSchema = z.object({
-  content: z.string().min(1).max(8000),
+  content: z.string().min(1),
   role: z.enum(["USER", "SYSTEM"]).optional(),
   images: imagesSchema,
 });
@@ -34,7 +34,7 @@ const quizSchema = z
 
 const updateMessageSchema = z
   .object({
-    content: z.string().min(1).max(8000).optional(),
+    content: z.string().min(1).optional(),
     quiz: quizSchema.optional(),
     images: imagesSchema,
     pruneFollowing: z.boolean().optional(),

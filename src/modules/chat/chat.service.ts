@@ -17,7 +17,7 @@ import { buildSearchContextBlock, performWebSearch } from "../../lib/websearch";
 export const streamSchema = z
   .object({
     conversationId: z.string().min(1),
-    userMessage: z.string().min(1).max(8000).optional(),
+    userMessage: z.string().min(1).optional(),
     existingUserMessageId: z.string().min(1).optional(),
     images: z.array(imageDataUrlSchema).max(MAX_IMAGES).optional(),
     files: fileAttachmentsSchema,
