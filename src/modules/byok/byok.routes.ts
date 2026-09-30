@@ -230,4 +230,114 @@ router.post(
   }
 );
 
+const transcribeSchema = z.object({
+  provider: z.string().min(1),
+  apiKey: z.string().min(1).max(600),
+  model: z.string().min(1).max(120),
+  // dataURL (data:audio/...;base64,...) — JSON avoids a multipart dep;
+  // 40mb body limit applies. Capped to 25MB raw (Whisper API limit).
+  audio: z.string().min(1),
+});
+
+// POST /api/byok/transcribe — speech-to-text through the user's own provider
+// key (OpenAI-compatible /audio/transcriptions: OpenAI, Groq, custom
+// endpoints). The key + audio are used for this single call only and never
+// stored. Browser hits our API (no CORS surprises); we relay multipart.
+router.post(
+  "/transcribe",
+  requireAuth,
+  validateBody(transcribeSchema),
+  async (req, res) => {
+    const { provider: providerRaw, apiKey, model, audio } = req.body as z.infer<
+      typeof transcribeSchema
+    >;
+    const provider = await getByokProviderAsync(providerRaw);
+    if (!provider) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "BAD_PROVIDER", message: "Unknown provider." },
+      });
+    }
+    if (provider.kind !== "openai") {
+      return res.json({
+        success: true,
+        data: {
+          text: "",
+          message: `${provider.name} does not expose an OpenAI-compatible transcription endpoint — using the on-device default instead.`,
+        },
+      });
+    }
+    const trimmedKey = apiKey.trim();
+    if (!isByokKeyFormatSupported(provider, trimmedKey)) {
+      return res.json({
+        success: true,
+        data: {
+          text: "",
+          message: `This doesn't look like a ${provider.name} key (expected ${provider.keyHint}).`,
+        },
+      });
+    }
+
+    const dataUrl = audio.trim();
+    const dataMatch = /^data:(audio\/[a-zA-Z0-9.+-]+);base64,(.+)$/s.exec(dataUrl);
+    if (!dataMatch) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "BAD_AUDIO", message: "Audio must be a base64 dataURL." },
+      });
+    }
+    const [, mime, b64] = dataMatch;
+    let buf: Buffer;
+    try {
+      buf = Buffer.from(b64, "base64");
+    } catch {
+      return res.status(400).json({
+        success: false,
+        error: { code: "BAD_AUDIO", message: "Audio is not valid base64." },
+      });
+    }
+    if (buf.length === 0 || buf.length > 25 * 1024 * 1024) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "BAD_AUDIO", message: "Audio must be 1 byte – 25MB." },
+      });
+    }
+    const ext = (mime.split("/")[1] || "mp3").replace(/[^a-z0-9]/gi, "") || "mp3";
+
+    try {
+      const form = new FormData();
+      form.append("file", new Blob([buf], { type: mime }), `audio.${ext}`);
+      form.append("model", model.trim());
+      form.append("response_format", "json");
+      const response = await fetch(`${provider.baseUrl}/audio/transcriptions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${trimmedKey}` },
+        body: form,
+        signal: AbortSignal.timeout(90000),
+      });
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 500);
+        return res.json({
+          success: true,
+          data: {
+            text: "",
+            message: `${provider.name} transcription failed (${response.status})${detail ? `: ${detail}` : ""} — using the on-device default instead.`,
+          },
+        });
+      }
+      const json = (await response.json()) as any;
+      const text = typeof json?.text === "string" ? json.text.trim() : "";
+      return res.json({ success: true, data: { text } });
+    } catch (err: any) {
+      return res.json({
+        success: true,
+        data: {
+          text: "",
+          message: `Could not reach ${provider.name} for transcription — using the on-device default instead.`,
+        },
+      });
+    }
+  }
+);
+
 export default router;
