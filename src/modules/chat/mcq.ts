@@ -86,17 +86,62 @@ export type McqReplyOpts = {
 
 const MCQ_REPEAT_BYPASS = /repeat|shuffle|again/i;
 
-const buildMcqPrompt = (topic: string, count: number, exclusion: string[]): string => {
-  const base =
-    `Generate EXACTLY ${count} multiple-choice quiz questions on the topic "${topic}". ` +
-    `This is a strict requirement: your response must contain exactly ${count} questions — no more, no fewer. Count them before replying. ` +
-    `Each question must have exactly 4 options with exactly one correct answer. ` +
-    `Reply with ONLY JSON in the form {"questions":[{"question":"...","options":["...","...","...","..."],"answerIndex":0,"explanation":"..."}]}. ` +
-    `Keep each question <=300 characters, each option <=200 characters, explanation <=300 characters and optional. ` +
-    `No markdown, no extra text.`;
+// Short continuation ("mcq next round" / "mcq continue" / "mcq more",
+// optional count or "on <topic>" after it). The real topic resolves from the
+// latest quiz in this conversation — the client only sends the short text.
+const NEXT_ROUND_RE = /^(next round|continue|more)\b/i;
+
+const ANSWER_SPREAD_LINE =
+  `DISTRIBUTE the correct answers evenly across all four positions ` +
+  `(roughly 25% A, 25% B, 25% C, 25% D, in random order per question) — ` +
+  `never stack the correct answer in one position.`;
+
+const PATTERN_VARIETY_LINE =
+  `VARY the question patterns: definitions, real-world scenarios, ` +
+  `comparisons, cause-and-effect, examples, applications — do not write ` +
+  `every question with the same monotonous stem.`;
+
+const JSON_FORMAT_LINE =
+  `Reply with ONLY JSON in the form {"questions":[{"question":"...","options":["...","...","...","..."],"answerIndex":0,"explanation":"..."}]}. ` +
+  `Keep each question <=300 characters, each option <=200 characters, explanation <=300 characters and optional. ` +
+  `No markdown, no extra text.`;
+
+const buildMcqPrompt = (
+  topic: string,
+  count: number,
+  exclusion: string[],
+  opts: { round?: number; continuation?: boolean } = {}
+): string => {
+  const { round = 1, continuation = false } = opts;
+  const head = continuation
+    ? `Round ${round} of the "${topic}" quiz: generate EXACTLY ${count} NEW questions. ` +
+      `Earlier rounds are in our chat history — do not repeat any asked question. ` +
+      `This is a strict requirement: your response must contain exactly ${count} questions — no more, no fewer. Count them before replying. ` +
+      `Each question must have exactly 4 options with exactly one correct answer.`
+    : `Generate EXACTLY ${count} multiple-choice quiz questions on the topic "${topic}". ` +
+      `This is a strict requirement: your response must contain exactly ${count} questions — no more, no fewer. Count them before replying. ` +
+      `Each question must have exactly 4 options with exactly one correct answer.`;
+  const base = `${head} ${ANSWER_SPREAD_LINE} ${PATTERN_VARIETY_LINE} ${JSON_FORMAT_LINE}`;
   if (exclusion.length === 0) return base;
   return `${base} Do NOT repeat these questions: ${JSON.stringify(exclusion)}`;
 };
+
+/** Deterministic answer spread: rotate each question's options by
+ *  (index + round), so even a model that always answers A yields an even
+ *  A/B/C/D split. The correct option text always follows answerIndex.
+ *  Exported for unit testing. */
+export const spreadAnswerPositions = (
+  questions: McqQuestion[],
+  round: number
+): McqQuestion[] =>
+  questions.map((q, i) => {
+    if (!Array.isArray(q.options) || q.options.length !== 4) return q;
+    if (!Number.isInteger(q.answerIndex) || q.answerIndex < 0 || q.answerIndex > 3) return q;
+    const offset = (((i + round) % 4) + 4) % 4;
+    if (offset === 0) return q;
+    const options = q.options.map((_, k) => q.options[(k - offset + 4) % 4]);
+    return { ...q, options, answerIndex: (q.answerIndex + offset) % 4 };
+  });
 
 const stripCodeFences = (text: string): string =>
   (text || "")
@@ -147,6 +192,47 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
     return finishText("Tell me a topic for the quiz — e.g. `mcq solar system`.");
   }
 
+  // Next-round shortcut: the client sends only "mcq next round" — the topic
+  // resolves from the latest quiz in this conversation (history binds the
+  // context). Accepts an optional count ("mcq next round 5") or topic
+  // ("mcq next round on photosynthesis").
+  let roundTopic = cleanTopic;
+  let continuation = false;
+  let countOverride: number | null = null;
+  const nrMatch = cleanTopic.match(NEXT_ROUND_RE);
+  if (nrMatch) {
+    continuation = true;
+    const rest = cleanTopic
+      .slice(nrMatch[0].length)
+      .trim()
+      .replace(/^on\s+/i, "");
+    if (rest) {
+      const parsed = parseMcqCount(rest);
+      // parseMcqCount falls back to DEFAULT_MCQ_COUNT with the raw text as
+      // topic when no number is present — only take the count when rest
+      // actually carries one.
+      if (/\d/.test(rest)) countOverride = parsed.count;
+      if (parsed.cleanTopic && !/^\d+\s*$/.test(rest)) roundTopic = parsed.cleanTopic;
+    }
+    if (roundTopic === cleanTopic) {
+      const recent = await prisma.message.findMany({
+        where: { conversationId },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      });
+      const lastQuiz = recent
+        .map((r) => (r as unknown as { quiz?: unknown }).quiz as McqQuiz | null | undefined)
+        .find(
+          (q): q is McqQuiz =>
+            !!q && typeof q.topic === "string" && Array.isArray(q.questions)
+        );
+      if (!lastQuiz) {
+        return finishText("Start a quiz first — e.g. `mcq solar system` — then say `mcq next round`.");
+      }
+      roundTopic = lastQuiz.topic;
+    }
+  }
+
   try {
     const bypassExclusion = MCQ_REPEAT_BYPASS.test(cleanTopic);
     const bankList: string[] = Array.isArray(askedBank)
@@ -157,17 +243,23 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
     const exclusion: string[] = bypassExclusion
       ? []
       : bankList.slice(0, 30).map((q) => q.slice(0, 120));
-    const { count, cleanTopic: countedTopic } = parseMcqCount(cleanTopic);
-    const topicForPrompt = countedTopic || cleanTopic;
+    const { count: parsedCount, cleanTopic: countedTopic } = parseMcqCount(
+      continuation ? roundTopic : cleanTopic
+    );
+    const count = countOverride ?? parsedCount;
+    const topicForPrompt = continuation ? roundTopic : countedTopic || cleanTopic;
 
     const attemptOnce = async (askCount: number, askExclusion: string[]): Promise<McqQuestion[] | null> => {
-      const askPrompt = buildMcqPrompt(topicForPrompt, askCount, askExclusion);
+      const askPrompt = buildMcqPrompt(topicForPrompt, askCount, askExclusion, {
+        round,
+        continuation,
+      });
       const askMaxTokens = Math.min(8000, Math.max(2000, askCount * 250));
       // BYOK: ask the user's provider directly (same prompt + parsing).
       if (opts.byok) {
         const text = await callByokText(opts.byok, askPrompt, {
           maxTokens: askMaxTokens,
-          temperature: 0.3,
+          temperature: 0.7,
         });
         return text ? parseMcqText(text) : null;
       }
@@ -184,7 +276,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
             model: selectedModel,
             messages: [{ role: "user", content: askPrompt }],
             max_tokens: Math.min(8000, Math.max(2000, askCount * 250)),
-            temperature: 0.3,
+            temperature: 0.7,
           }),
           signal: AbortSignal.timeout(90000),
         });
@@ -203,13 +295,14 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
     const mergeInto = (target: McqQuestion[], incoming: McqQuestion[] | null): McqQuestion[] =>
       mergeMcqQuestions(target, incoming, count, bankSet, bypassExclusion);
 
+    const displayTopic = continuation ? roundTopic : cleanTopic;
     let fetched: McqQuestion[] | null = await attemptOnce(count, exclusion);
     if (!fetched) {
       // Retry ONCE on invalid JSON / transient failure.
       fetched = await attemptOnce(count, exclusion);
     }
     if (!fetched || fetched.length === 0) {
-      return finishText(`Sorry, I couldn't generate a quiz on "${cleanTopic}" right now. Please try again.`);
+      return finishText(`Sorry, I couldn't generate a quiz on "${displayTopic}" right now. Please try again.`);
     }
 
     const deduped: McqQuestion[] = mergeInto([], fetched);
@@ -229,10 +322,14 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       if (deduped.length === before) break; // no fresh questions — stop looping
     }
     if (deduped.length === 0) {
-      return finishText(`Sorry, I couldn't generate fresh questions on "${cleanTopic}" right now. Please try again.`);
+      return finishText(`Sorry, I couldn't generate fresh questions on "${displayTopic}" right now. Please try again.`);
     }
 
-    const quiz: McqQuiz = { round, topic: cleanTopic, questions: deduped.slice(0, count) };
+    const quiz: McqQuiz = {
+      round,
+      topic: displayTopic,
+      questions: spreadAnswerPositions(deduped.slice(0, count), round),
+    };
 
     await (prisma.message.update as any)({
       where: { id: assistantMessageId },
