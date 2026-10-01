@@ -15,6 +15,7 @@ const settingsSchema = z.object({
     .optional(),
   pinHeader: z.boolean().optional(),
   showTopCard: z.boolean().optional(),
+  showScrollJump: z.boolean().optional(),
   model: z.string().min(1).max(200).optional(),
   imageModel: z.string().min(1).max(200).optional(),
   videoModel: z.string().min(1).max(200).optional(),
@@ -73,7 +74,7 @@ router.patch(
       return trimmed.slice(0, 512);
     };
     const folderFields = ["devicePhotosFolder", "deviceScreenshotsFolder"] as const;
-    const fields = ["theme", "fontScale", "brand", "pinHeader", "showTopCard", "model", "imageModel", "videoModel", "appFontSize", "iconScale"] as const;
+    const fields = ["theme", "fontScale", "brand", "pinHeader", "showTopCard", "showScrollJump", "model", "imageModel", "videoModel", "appFontSize", "iconScale"] as const;
     for (const k of fields) {
       if ((req.body as Record<string, unknown>)[k] !== undefined) {
         allowed[k] = (req.body as Record<string, unknown>)[k];
@@ -96,7 +97,7 @@ router.patch(
       // retry without the new fields instead of failing the whole save.
       const code = (err as { code?: string })?.code;
       if ((code === "P2022" || code === "P2003") && Object.keys(allowed).length > 0) {
-        const { appFontSize: _a, iconScale: _i, imageModel: _m, videoModel: _v, showTopCard: _t, devicePhotosFolder: _p, deviceScreenshotsFolder: _s, ...rest } = allowed as Record<string, unknown>;
+        const { appFontSize: _a, iconScale: _i, imageModel: _m, videoModel: _v, showTopCard: _t, showScrollJump: _j, devicePhotosFolder: _p, deviceScreenshotsFolder: _s, ...rest } = allowed as Record<string, unknown>;
         settings = await prisma.userSettings.update({
           where: { userId: req.user!.id },
           data: rest
