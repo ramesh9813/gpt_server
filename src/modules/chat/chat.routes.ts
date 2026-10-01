@@ -196,9 +196,53 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   // so long image chats don't stall the first token on multi-MB reads.
   const isArtifactTurn =
     artifact === true || wantsArtifact(userMsgContent);
+  // Retry turns reuse the assistant row following the retried user message
+  // (reset to a fresh STREAMING shell) instead of minting a second bubble:
+  // regenerate then shows ONLY the new answer, never previous + new.
+  // Fresh turns (or retries with no following row) create as before.
+  const prepareAssistantRow = async () => {
+    if (streamUserMessageId) {
+      const userRow = await prisma.message.findFirst({
+        where: { id: streamUserMessageId, conversationId },
+      });
+      if (userRow) {
+        const following = await prisma.message.findFirst({
+          where: {
+            conversationId,
+            role: "ASSISTANT",
+            createdAt: { gt: userRow.createdAt },
+          },
+          orderBy: { createdAt: "asc" },
+        });
+        if (following) {
+          return prisma.message.update({
+            where: { id: following.id },
+            data: {
+              content: "",
+              reasoning: null,
+              status: "STREAMING",
+              error: null,
+              model: selectedModel,
+              images: [],
+              videos: [],
+              quiz: null,
+              sources: [],
+              usedSearch: false,
+              followups: [],
+              promptTokens: null,
+              completionTokens: null,
+              tokenCount: null,
+              durationMs: null,
+            },
+          });
+        }
+      }
+    }
+    return prisma.message.create({ data: { conversationId, role: "ASSISTANT", content: "", status: "STREAMING" } });
+  };
   const [history, assistantMsg, effectiveSystemPrompt] = await Promise.all([
     fetchHistoryRows(conversationId, { includeUserMessageId: streamUserMessageId }),
-    prisma.message.create({ data: { conversationId, role: "ASSISTANT", content: "", status: "STREAMING" } }),
+    prepareAssistantRow(),
     resolveEffectiveSystemPrompt(req.user!.id, { userMsgContent, artifact, systemPrompt }),
   ]);
   // Per-chat tuning: merged as a guarded system block after the base prompt.
