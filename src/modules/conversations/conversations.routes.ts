@@ -25,6 +25,22 @@ router.get("/", requireAuth, async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 200); // Increased limit for easier grouping
   const skip = (page - 1) * limit;
 
+  // Garbage-collect message-less conversations older than a day: creating a
+  // chat and walking away without typing must not pile empty rows into
+  // history. Best-effort — list failures must never come from cleanup.
+  try {
+    await prisma.conversation.deleteMany({
+      where: {
+        userId: req.user!.id,
+        deletedAt: null,
+        createdAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+        messages: { none: {} },
+      },
+    });
+  } catch {
+    // ignore — history still lists
+  }
+
   const [items, total] = await Promise.all([
     prisma.conversation.findMany({
       where: {
@@ -36,6 +52,7 @@ router.get("/", requireAuth, async (req, res) => {
           : undefined
       },
       orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
+      include: { _count: { select: { messages: true } } },
       skip,
       take: limit
     }),
