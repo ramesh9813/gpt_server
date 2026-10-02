@@ -9,6 +9,7 @@ import { isFirewallChallengeBody } from "../../lib/byok";
 import { logger } from "../../lib/logger";
 import { generateByokFollowups } from "./followups";
 import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisionRejection, stripImageParts } from "./byokRequest";
+import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
 import { buildSearchContextBlock, performWebSearch } from "../../lib/websearch";
@@ -251,11 +252,17 @@ export const streamByokCompletion = async (
     let buffer = "";
     let done = false;
     let usage: any = null;
+    // Every parsed frame + raw bytes: feeds the non-SSE fallback (gateways
+    // that ignore "stream": true) and the empty-stream diagnostic log.
+    const parsedPayloads: any[] = [];
+    let rawText = "";
 
     while (!done) {
       const { value, done: readerDone } = await reader.read();
       if (readerDone) break;
-      buffer += decoder.decode(value, { stream: true });
+      const text = decoder.decode(value, { stream: true });
+      rawText += text;
+      buffer += text;
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
       for (const line of lines) {
@@ -268,6 +275,14 @@ export const streamByokCompletion = async (
         }
         try {
           const parsed = JSON.parse(data);
+          parsedPayloads.push(parsed);
+          // The provider failed AFTER opening the stream (CleanAPIs documents
+          // `data: {"error":{...}}` frames for this): surface its real message
+          // instead of the misleading "empty stream" error below.
+          const streamError = extractStreamError(parsed);
+          if (streamError) {
+            return fail(streamError.status, streamError.message);
+          }
           if (provider.kind === "anthropic") {
             // Messages-API SSE: text lives in content_block_delta events; usage
             // arrives via message_start (input) and message_delta (output).
@@ -393,6 +408,11 @@ export const streamByokCompletion = async (
         if (data && data !== "[DONE]") {
           try {
             const parsed = JSON.parse(data);
+            parsedPayloads.push(parsed);
+            const tailError = extractStreamError(parsed);
+            if (tailError) {
+              return fail(tailError.status, tailError.message);
+            }
             const anns = parsed.choices?.[0]?.delta?.annotations;
             if (Array.isArray(anns)) {
               for (const a of anns) {
@@ -429,9 +449,40 @@ export const streamByokCompletion = async (
       }
     }
 
+    // Some gateways ignore `"stream": true` and answer with one regular
+    // (non-SSE) JSON completion object on a 200. Recover its text before
+    // calling the turn empty — the provider DID answer.
+    if (!assistantContent && !assistantReasoning) {
+      const candidates = [...parsedPayloads];
+      const whole = `${rawText}${buffer}${decoder.decode()}`.trim();
+      if (whole && !whole.startsWith("data:") && !whole.startsWith(":")) {
+        try {
+          candidates.push(JSON.parse(whole));
+        } catch {
+          // not a single JSON body — fall through to the empty check
+        }
+      }
+      const recovered = extractNonStreamingContent(candidates);
+      if (recovered && (recovered.content || recovered.reasoning)) {
+        if (recovered.content) {
+          assistantContent = recovered.content;
+          sendEvent("token", { delta: recovered.content });
+        }
+        if (recovered.reasoning && allowReasoning) {
+          assistantReasoning = recovered.reasoning;
+          sendEvent("reasoning", { delta: recovered.reasoning });
+        }
+        if (recovered.usage && !usage) usage = recovered.usage;
+      }
+    }
+
     // A 200 with zero deltas (filtered, mis-parsed, or empty turn) must not
     // persist as a silent empty COMPLETE bubble — fail with a reason.
     if (!assistantContent && !assistantReasoning && !usage) {
+      logger.warn(
+        { provider: provider.id, model, head: rawText.slice(0, 300) },
+        "BYOK stream ended with no parseable content"
+      );
       return fail(502, "The provider returned an empty stream (no content).");
     }
 

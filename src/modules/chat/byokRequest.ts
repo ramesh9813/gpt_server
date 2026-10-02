@@ -1,13 +1,9 @@
 // Pure BYOK request shaping — isolated from prisma/express so unit tests can
 // cover every provider without the app/DB import chain (or its slow boot).
-import type { ByokRequest } from "../../lib/byok";
-import {
-  BYOK_USER_AGENT,
-  firewallChallengeMessage,
-  isFirewallChallengeBody,
-} from "../../lib/byok";
+import type { ByokRequest } from "../../lib/byokTypes";
+import { BYOK_USER_AGENT, firewallChallengeMessage, isFirewallChallengeBody } from "../../lib/byok";
 import { TOKEN } from "../../lib/constants";
-import type { OpenRouterMessage } from "./chat.service";
+import type { OpenRouterMessage } from "./chatMappers";
 
 // ---- Gemini request shaping -------------------------------------------------
 

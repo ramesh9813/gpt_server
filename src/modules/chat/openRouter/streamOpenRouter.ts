@@ -1,0 +1,310 @@
+import type { Request, Response } from "express";
+import { prisma } from "../../../lib/prisma";
+import { env } from "../../../lib/config";
+import { logger } from "../../../lib/logger";
+import { TOKEN } from "../../../lib/constants";
+import { generateFollowups } from "../followups";
+import { getAvailableTools, executeMcpTool, type LlmToolDef } from "../../llm/toolBridge";
+import { RESEARCH_SYSTEM_PROMPT, WEB_SEARCH_SYSTEM_PROMPT } from "../chatPrompts";
+import { redactForLog, type OpenRouterMessage } from "../chatMappers";
+import { appendSourcesFooter, buildSearchContextBlock, performWebSearch } from "../../../lib/websearch";
+
+type PendingToolCall = { id: string; name: string; arguments: string };
+
+export const streamOpenRouterCompletion = async (
+  req: Request,
+  res: Response,
+  opts: {
+    assistantMessageId: string;
+    conversationId: string;
+    messages: OpenRouterMessage[];
+    selectedModel: string;
+    research?: boolean;
+    artifact?: boolean;
+    webSearch?: boolean;
+    think?: boolean;
+    canvaUserId?: string;
+  }
+) => {
+  const { assistantMessageId, conversationId, messages, selectedModel, research, artifact, webSearch, think, canvaUserId } = opts;
+  const startedAt = Date.now();
+  const allowReasoning = research === true || think === true;
+  if (!env.OPENROUTER_API_KEY) {
+    await prisma.message.update({
+      where: { id: assistantMessageId },
+      data: { status: "ERROR", error: "OPENROUTER_API_KEY is not configured on the server." },
+    });
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Content-Encoding": "none",
+      Pragma: "no-cache",
+    });
+    try { (res as unknown as { flushHeaders?: () => void }).flushHeaders?.(); } catch {}
+    res.write(`event: error\n`);
+    res.write(`data: ${JSON.stringify({ code: "CONFIG_ERROR", message: "OPENROUTER_API_KEY is not configured on the server. Please set it in your Render environment variables." })}\n\n`);
+    return res.end();
+  }
+  // TTFB path: write SSE headers BEFORE any async tool loading so first-byte is not gated on Canva/MCP.
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+    "Content-Encoding": "none",
+    Pragma: "no-cache",
+  });
+  try { (res as unknown as { flushHeaders?: () => void }).flushHeaders?.(); } catch {}
+  try { (res.socket as unknown as { setNoDelay?: (v: boolean) => void })?.setNoDelay?.(true); } catch {}
+  const sendEvent = (event: string, data: unknown) => {
+    if (res.writableEnded || (res as any).destroyed) return;
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    try { (res as unknown as { flush?: () => void }).flush?.(); } catch {}
+  };
+  const safeEnd = () => { if (!res.writableEnded && !(res as any).destroyed) res.end(); };
+  const controller = new AbortController();
+  req.on("close", () => controller.abort());
+
+  let assistantContent = "";
+  let assistantReasoning = "";
+  let lastPersistedLength = 0;
+  let lastPersistedAt = Date.now();
+  const sourceMap = new Map<string, { title: string; url: string }>();
+  let searchNotice: string | null = null;
+
+  const collectAnnotations = (chunk: any) => {
+    const anns = chunk?.choices?.[0]?.delta?.annotations;
+    if (!Array.isArray(anns)) return;
+    for (const a of anns) {
+      const c = a?.url_citation;
+      if (c && typeof c.url === "string" && c.url) sourceMap.set(c.url, { url: c.url, title: typeof c.title === "string" && c.title ? c.title : c.url });
+    }
+  };
+
+  // Canva tools are fetched lazily and never block TTFB for non-Canva users.
+  // The fetch is kicked off in parallel with the first provider request when needed.
+  let canvaTools: LlmToolDef[] = [];
+  let canvaToolsPromise: Promise<LlmToolDef[]> | null = null;
+  let canvaToolsLoaded = false;
+  const loadCanvaTools = async (): Promise<LlmToolDef[]> => {
+    if (canvaToolsLoaded) return canvaTools;
+    if (canvaToolsPromise) return canvaToolsPromise;
+    if (!canvaUserId || research === true) { canvaToolsLoaded = true; return canvaTools; }
+    canvaToolsPromise = getAvailableTools(canvaUserId).then(
+      (t) => { canvaTools = t; canvaToolsLoaded = true; return t; },
+      () => { canvaTools = []; canvaToolsLoaded = true; return []; }
+    );
+    return canvaToolsPromise;
+  };
+  // Warm the tools cache in the background without awaiting — TTFB not gated.
+  if (canvaUserId && research !== true) void loadCanvaTools().catch(() => {});
+
+  logger.info({ messages: redactForLog(messages) }, "Sending messages to OpenRouter");
+
+  // Universal search: server-side DuckDuckGo runs for EVERY model (no API
+  // key, no provider-native tool needed). Results are injected into the
+  // prompt AND pre-seeded into sourceMap so URLs land at the bottom even
+  // when the model emits no url_citation annotations.
+  let searchMessages = messages;
+  if (webSearch === true && research !== true) {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const rawQuery =
+      typeof lastUser?.content === "string"
+        ? lastUser.content
+        : Array.isArray(lastUser?.content)
+          ? (lastUser.content as any[]).filter((p) => p?.type === "text").map((p) => p.text).join("\n")
+          : "";
+    const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+    if (query) {
+      try {
+        const hits = await performWebSearch(query, 5);
+        for (const h of hits) {
+          if (!sourceMap.has(h.url)) sourceMap.set(h.url, { url: h.url, title: h.title });
+        }
+        if (hits.length > 0) {
+          const block = buildSearchContextBlock(query, hits);
+          searchMessages = [
+            { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${block}` },
+            ...messages,
+          ];
+        }
+      } catch (err) {
+        logger.warn({ err }, "Universal web search failed, continuing without results");
+      }
+    }
+  }
+
+  const runTurn = async (turnMessages: OpenRouterMessage[]): Promise<{ usage: any; toolCalls: PendingToolCall[]; terminal: boolean }> => {
+    const pending: PendingToolCall[] = [];
+    const useWebTool = webSearch === true && research !== true;
+    const webTools = useWebTool ? [{ type: "openrouter:web_search", parameters: { engine: "auto", max_results: 5 } }] : [];
+    const toolsForTurn = await loadCanvaTools();
+    const requestBody: Record<string, unknown> = {
+      model: selectedModel,
+      messages: research
+        ? [{ role: "system", content: RESEARCH_SYSTEM_PROMPT }, ...turnMessages]
+        : useWebTool ? [{ role: "system", content: WEB_SEARCH_SYSTEM_PROMPT }, ...turnMessages] : turnMessages,
+      ...(webTools.length > 0 || toolsForTurn.length > 0 ? { tools: [...webTools, ...toolsForTurn], tool_choice: "auto" } : {}),
+      stream: true,
+    };
+    if (research) requestBody.max_tokens = 8000;
+    if (artifact) requestBody.max_tokens = TOKEN.ARTIFACT_MAX_TOKENS;
+    if (research || think) requestBody.include_reasoning = true;
+
+    let response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json", "HTTP-Referer": env.APP_ORIGIN, "X-Title": "ChatUI" },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal,
+    });
+    if (!response.ok && useWebTool) {
+      logger.warn({ status: response.status }, "OpenRouter web-search turn failed, retrying without tools");
+      searchNotice = "Web search isn't available for the selected model — answering from general knowledge.";
+      const toolsForFallback = await loadCanvaTools();
+      const fallbackBody: Record<string, unknown> = {
+        model: selectedModel,
+        messages: [{ role: "system", content: WEB_SEARCH_SYSTEM_PROMPT }, ...turnMessages],
+        stream: true,
+        ...(toolsForFallback.length > 0 ? { tools: toolsForFallback, tool_choice: "auto" } : {}),
+      };
+      response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json", "HTTP-Referer": env.APP_ORIGIN, "X-Title": "ChatUI" },
+        body: JSON.stringify(fallbackBody),
+        signal: controller.signal,
+      });
+    }
+    logger.info({ status: response.status }, "OpenRouter response status");
+    if (!response.ok || !response.body) {
+      const errorText = await response.text();
+      logger.error({ errorText: errorText.slice(0, 2000) }, "OpenRouter error");
+      await prisma.message.update({ where: { id: assistantMessageId }, data: { status: "ERROR", error: errorText } });
+      sendEvent("error", { code: "OPENROUTER_ERROR", message: `OpenRouter error: ${errorText}` });
+      safeEnd();
+      return { usage: null, toolCalls: [], terminal: true };
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let done = false;
+    let usage: any = null;
+    while (!done) {
+      const { value, done: readerDone } = await reader.read();
+      if (readerDone) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const data = trimmed.replace(/^data:\s*/, "");
+        if (data === "[DONE]") { done = true; break; }
+        try {
+          const parsed = JSON.parse(data);
+          collectAnnotations(parsed);
+          const delta = parsed.choices?.[0]?.delta?.content;
+          if (typeof delta === "string" && delta.length > 0) { assistantContent += delta; sendEvent("token", { delta }); }
+          const reasoning = parsed.choices?.[0]?.delta?.reasoning ?? parsed.choices?.[0]?.delta?.reasoning_content;
+          if (allowReasoning && typeof reasoning === "string" && reasoning.length > 0) { assistantReasoning += reasoning; sendEvent("reasoning", { delta: reasoning }); }
+          const toolCallDeltas = parsed.choices?.[0]?.delta?.tool_calls;
+          if (Array.isArray(toolCallDeltas)) {
+            for (const tc of toolCallDeltas) {
+              const idx = typeof tc?.index === "number" ? tc.index : 0;
+              if (!pending[idx]) pending[idx] = { id: "", name: "", arguments: "" };
+              if (typeof tc?.id === "string") pending[idx].id += tc.id;
+              if (typeof tc?.function?.name === "string") pending[idx].name += tc.function.name;
+              if (typeof tc?.function?.arguments === "string") pending[idx].arguments += tc.function.arguments;
+            }
+          }
+          if (parsed.usage) usage = parsed.usage;
+        } catch {}
+      }
+      const now = Date.now();
+      if (assistantContent.length + assistantReasoning.length - lastPersistedLength >= 200 || now - lastPersistedAt > 1000) {
+        lastPersistedLength = assistantContent.length + assistantReasoning.length;
+        lastPersistedAt = now;
+        await prisma.message.update({ where: { id: assistantMessageId }, data: { content: assistantContent, reasoning: allowReasoning ? assistantReasoning || null : null } });
+      }
+    }
+    return { usage, toolCalls: pending, terminal: false };
+  };
+
+  try {
+    let turnMessages = searchMessages;
+    let usage: any = null;
+    for (let turn = 0; ; turn += 1) {
+      const result = await runTurn(turnMessages);
+      if (result.terminal) return;
+      usage = result.usage ?? usage;
+      const requested = result.toolCalls.filter((c) => c.name);
+      const toolsResolved = await loadCanvaTools();
+      if (toolsResolved.length === 0 || requested.length === 0 || turn >= 1 || !canvaUserId) break;
+      const uid = canvaUserId;
+      sendEvent("tools", { names: requested.map((c) => c.name) });
+      const toolResults: Array<{ id: string; text: string }> = [];
+      for (const tc of requested) {
+        let parsedArgs: Record<string, unknown> = {};
+        try {
+          const raw = tc.arguments.trim() ? JSON.parse(tc.arguments) : {};
+          parsedArgs = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+        } catch {
+          toolResults.push({ id: tc.id, text: "Error: the model produced invalid JSON arguments and they were rejected." });
+          continue;
+        }
+        try { toolResults.push({ id: tc.id, text: await executeMcpTool(uid, tc.name, parsedArgs) }); }
+        catch (err: any) { toolResults.push({ id: tc.id, text: `Error: ${err?.message || "tool execution failed"}` }); }
+      }
+      if (controller.signal.aborted) {
+        await prisma.message.update({ where: { id: assistantMessageId }, data: { content: assistantContent, reasoning: allowReasoning ? assistantReasoning || null : null, status: "COMPLETE", model: selectedModel, durationMs: Date.now() - startedAt } });
+        await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+        return safeEnd();
+      }
+      assistantContent = ""; assistantReasoning = ""; lastPersistedLength = 0;
+      turnMessages = [
+        ...turnMessages,
+        { role: "assistant", content: "", tool_calls: requested.map((tc) => ({ id: tc.id, type: "function", function: { name: tc.name, arguments: tc.arguments } })) },
+        ...toolResults.map((r) => ({ role: "tool", tool_call_id: r.id, content: r.text })),
+      ] as unknown as OpenRouterMessage[];
+    }
+    const sources = [...sourceMap.values()];
+    // Footer guarantees searched-page URLs at the bottom of the bubble.
+    const withFooter = appendSourcesFooter(assistantContent, sources);
+    if (withFooter !== assistantContent) {
+      sendEvent("token", { delta: withFooter.slice(assistantContent.length) });
+      assistantContent = withFooter;
+    }
+    await prisma.message.update({
+      where: { id: assistantMessageId },
+      data: {
+        content: assistantContent, reasoning: allowReasoning ? assistantReasoning || null : null, status: "COMPLETE", model: selectedModel,
+        promptTokens: usage?.prompt_tokens, completionTokens: usage?.completion_tokens, tokenCount: usage?.total_tokens, durationMs: Date.now() - startedAt,
+        ...(sources.length > 0 ? { usedSearch: true, sources } : { usedSearch: false }),
+      },
+    });
+    await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+    if (sources.length > 0) sendEvent("sources", { messageId: assistantMessageId, sources });
+    if (searchNotice) sendEvent("notice", { message: searchNotice });
+    sendEvent("done", { messageId: assistantMessageId, usage: usage || {}, durationMs: Date.now() - startedAt });
+    try {
+      const followups = await generateFollowups(selectedModel, assistantContent);
+      if (followups.length > 0 && !res.writableEnded && !(res as any).destroyed) {
+        await prisma.message.update({ where: { id: assistantMessageId }, data: { followups } });
+        sendEvent("followups", { messageId: assistantMessageId, followups });
+      }
+    } catch (err) { logger.error({ err }, "Followups error"); }
+    return safeEnd();
+  } catch (err: any) {
+    if (controller.signal.aborted) {
+      await prisma.message.update({ where: { id: assistantMessageId }, data: { content: assistantContent, reasoning: allowReasoning ? assistantReasoning || null : null, status: "COMPLETE", model: selectedModel, durationMs: Date.now() - startedAt } });
+      await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+      return safeEnd();
+    }
+    logger.error({ err }, "Stream error");
+    await prisma.message.update({ where: { id: assistantMessageId }, data: { status: "ERROR", error: err?.message || "Stream error" } });
+    sendEvent("error", { code: "STREAM_ERROR", message: "Streaming failed" });
+    return safeEnd();
+  }
+};
