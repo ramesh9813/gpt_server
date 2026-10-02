@@ -8,6 +8,7 @@ import {
   isByokKeyFormatSupported,
 } from "../../lib/byok";
 import { getByokProviderAsync } from "../../lib/providers";
+import { testByokInference } from "../chat/byokCall";
 
 const router = Router();
 
@@ -19,6 +20,12 @@ const validateSchema = z.object({
 const modelsSchema = z.object({
   provider: z.string().min(1),
   apiKey: z.string().max(600).optional(),
+});
+
+const testSchema = z.object({
+  provider: z.string().min(1),
+  apiKey: z.string().min(1).max(600),
+  model: z.string().max(200).optional(),
 });
 
 // POST /api/byok/validate — checks the shape of a user-supplied key against the
@@ -227,6 +234,70 @@ router.post(
         },
       });
     }
+  }
+);
+
+// POST /api/byok/test — Verify-key probe: sends ONE tiny real completion to
+// the provider with the user's key and reports the exact outcome. Listing
+// /models can succeed while inference is broken (out of balance, upstream
+// billing failure, dead model id), so this is the check that actually proves
+// chats will work. The key is used for this call only and never stored.
+router.post(
+  "/test",
+  requireAuth,
+  validateBody(testSchema),
+  async (req, res) => {
+    const { provider: providerRaw, apiKey, model: modelRaw } = req.body as z.infer<
+      typeof testSchema
+    >;
+    const provider = await getByokProviderAsync(providerRaw);
+    if (!provider) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "BAD_PROVIDER", message: "Unknown provider." },
+      });
+    }
+
+    const trimmedKey = apiKey.trim();
+    if (!isByokKeyFormatSupported(provider, trimmedKey)) {
+      return res.json({
+        success: true,
+        data: {
+          ok: false,
+          status: 0,
+          model: "",
+          message: `This doesn't look like a ${provider.name} key (expected ${provider.keyHint}).`,
+        },
+      });
+    }
+
+    let model = (modelRaw ?? "").trim();
+    const prefix = `${provider.id}:`.toLowerCase();
+    if (model.toLowerCase().startsWith(prefix)) model = model.slice(prefix.length).trim();
+    // No model picked: try the first live catalog entry (a key can lack the
+    // models:read scope yet still run inference, so this is best-effort).
+    if (!model) {
+      try {
+        const catalog = await fetchByokModels(provider, trimmedKey);
+        model = catalog.models[0] ?? "";
+      } catch {
+        // fall through to the message below
+      }
+    }
+    if (!model) {
+      return res.json({
+        success: true,
+        data: {
+          ok: false,
+          status: 0,
+          model: "",
+          message: "Select a model first — there is nothing to send the test message to.",
+        },
+      });
+    }
+
+    const result = await testByokInference({ provider, model, apiKey: trimmedKey });
+    return res.json({ success: true, data: result });
   }
 );
 

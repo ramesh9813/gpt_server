@@ -71,6 +71,42 @@ const openaiProvider = (id: string): ByokProvider => ({
   models: [],
 });
 
+describe("testByokInference", () => {
+  const { testByokInference } = require("../src/modules/chat/byokCall") as typeof import("../src/modules/chat/byokCall");
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it("ok when the provider answers", async () => {
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "ok" } }] }),
+    });
+    const r = await testByokInference({ provider: openaiProvider("cleanapis"), model: "m", apiKey: "k" });
+    expect(r.ok).toBe(true);
+    expect(r.model).toBe("m");
+  });
+
+  it("surfaces the exact provider error", async () => {
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: async () => JSON.stringify({ error: { message: "Billing verification failed. Please check your payment method." } }),
+    });
+    const r = await testByokInference({ provider: openaiProvider("cleanapis"), model: "m", apiKey: "k" });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("Billing verification failed");
+  });
+
+  it("fails on an empty reply", async () => {
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "" } }] }),
+    });
+    const r = await testByokInference({ provider: openaiProvider("cleanapis"), model: "m", apiKey: "k" });
+    expect(r.ok).toBe(false);
+  });
+});
+
 describe("fetchByokModels envelopes", () => {
   const mockModels = (json: any) =>
     ((global as any).fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => json }));
