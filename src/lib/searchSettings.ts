@@ -7,6 +7,17 @@ import { prisma } from "./prisma";
 export const SEARCH_PROVIDERS = ["auto", "brave", "exa", "youtube", "duckduckgo"] as const;
 export type SearchProvider = (typeof SEARCH_PROVIDERS)[number];
 
+// Display names for live progress lines ("Searching Brave for …").
+export const SEARCH_PROVIDER_LABELS: Record<string, string> = {
+  brave: "Brave",
+  exa: "Exa",
+  youtube: "YouTube",
+  duckduckgo: "DuckDuckGo",
+};
+
+export const searchProviderLabel = (provider: string): string =>
+  SEARCH_PROVIDER_LABELS[provider] ?? "web";
+
 export const isSearchProvider = (v: unknown): v is SearchProvider =>
   typeof v === "string" && (SEARCH_PROVIDERS as readonly string[]).includes(v);
 

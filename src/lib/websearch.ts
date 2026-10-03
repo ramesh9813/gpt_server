@@ -209,13 +209,13 @@ const performBraveSearch = async (query: string, max: number): Promise<WebResult
   }
 };
 
-export const performWebSearch = async (
+export const performWebSearchWithProvider = async (
   query: string,
   max = 5,
   provider: "auto" | "brave" | "exa" | "youtube" | "duckduckgo" = "auto"
-): Promise<WebResult[]> => {
+): Promise<{ hits: WebResult[]; provider: "brave" | "exa" | "youtube" | "duckduckgo" | "none" }> => {
   const q = query.trim().slice(0, 500);
-  if (!q) return [];
+  if (!q) return { hits: [], provider: "none" };
   // Provider chain: explicit pick first, then the rest in auto order.
   // YouTube leads auto only on video intent; missing keys and failures fall
   // through to the next provider.
@@ -231,20 +231,26 @@ export const performWebSearch = async (
   for (const p of order) {
     if (p === "youtube" && env.YOUTUBE_API_KEY?.trim()) {
       const yt = await performYouTubeSearch(q, max);
-      if (yt.length > 0) return yt;
+      if (yt.length > 0) return { hits: yt, provider: p };
     } else if (p === "brave" && env.BRAVE_API_KEY?.trim()) {
       const brave = await performBraveSearch(q, max);
-      if (brave.length > 0) return brave;
+      if (brave.length > 0) return { hits: brave, provider: p };
     } else if (p === "exa" && env.EXA_API_KEY?.trim()) {
       const exa = await performExaSearch(q, max);
-      if (exa.length > 0) return exa;
+      if (exa.length > 0) return { hits: exa, provider: p };
     } else if (p === "duckduckgo") {
       const ddg = await performDuckDuckGo(q, max);
-      if (ddg.length > 0) return ddg;
+      if (ddg.length > 0) return { hits: ddg, provider: p };
     }
   }
-  return [];
+  return { hits: [], provider: "none" };
 };
+
+export const performWebSearch = async (
+  query: string,
+  max = 5,
+  provider: "auto" | "brave" | "exa" | "youtube" | "duckduckgo" = "auto"
+): Promise<WebResult[]> => (await performWebSearchWithProvider(query, max, provider)).hits;
 
 // Exa AI search (RAG-optimized highlights): POST /search with a Bearer key.
 // Token-lean by design — highlights only, a few results max.

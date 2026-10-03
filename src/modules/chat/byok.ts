@@ -12,8 +12,9 @@ import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisio
 import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
-import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearch, wantsWebSearch } from "../../lib/websearch";
-import { resolveSearchProvider } from "../../lib/searchSettings";
+import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearchWithProvider, wantsWebSearch } from "../../lib/websearch";
+import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
+import { resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
 
 // ---- entry point ------------------------------------------------------------
 
@@ -83,12 +84,31 @@ export const streamByokCompletion = async (
       : Array.isArray(lastUser?.content)
         ? (lastUser.content as any[]).filter((p) => p?.type === "text").map((p) => p.text).join("\n")
         : "";
-  if (webSearch === true || wantsWebSearch(rawQuery)) {
+  // Pasted link(s) asking for their detail: read the page(s) itself, even
+  // with the search toggle off. Otherwise the toggle/auto-intent web search.
+  // Stage events narrate the wait above the typing dots (2–3 short lines).
+  const pageUrls = extractPageUrls(rawQuery);
+  if (pageUrls.length > 0) sendEvent("stage", { text: `Opening ${pageHost(pageUrls[0])}…` });
+  const linked = await fetchLinkedPages(rawQuery).catch(() => null);
+  if (linked) {
+    sendEvent("stage", { text: `Reading ${linked.sources[0]?.title ?? "page"}…` });
+    for (const s of linked.sources) {
+      if (!sourceMap.has(s.url)) sourceMap.set(s.url, { url: s.url, title: s.title });
+    }
+    searchMessages = [
+      { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${linked.block}` },
+      ...messages,
+    ];
+  } else if (webSearch === true || wantsWebSearch(rawQuery)) {
     const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
     if (query) {
       try {
         const searchProvider = await resolveSearchProvider((req as any).user?.id);
-        const hits = await performWebSearch(query, 5, searchProvider);
+        const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
+        const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
+        sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
+        const { hits } = await performWebSearchWithProvider(query, 5, searchProvider);
+        if (hits.length > 0) sendEvent("stage", { text: `Reading ${hits.length} source${hits.length === 1 ? "" : "s"}…` });
         for (const h of hits) {
           if (!sourceMap.has(h.url)) sourceMap.set(h.url, { url: h.url, title: h.title });
         }
