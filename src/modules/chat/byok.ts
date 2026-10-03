@@ -12,7 +12,7 @@ import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisio
 import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
-import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../lib/websearch";
+import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../lib/websearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
 import { resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
@@ -77,7 +77,7 @@ export const streamByokCompletion = async (
   // results + bottom URL list. No native tool required. Runs on the toggle
   // OR automatically when the prompt carries a search/news/recency intent.
   let searchMessages = messages;
-  const sourceMap = new Map<string, { title: string; url: string }>();
+  const sourceMap = new Map<string, { title: string; url: string; image?: string }>();
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const rawQuery =
     typeof lastUser?.content === "string"
@@ -124,12 +124,17 @@ export const streamByokCompletion = async (
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
-        const { hits } = await performWebSearchWithProvider(query, 5, searchProvider);
+        const { hits: rawHits } = await performWebSearchWithProvider(query, 5, searchProvider);
+        const hits = await enrichWithImages(rawHits);
         hits.forEach((h, i) =>
           sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url) })
         );
+        const photoCount = hits.filter((h) => h.image).length;
+        if (photoCount > 0) sendEvent("stage", { text: `Adding ${photoCount} photo${photoCount === 1 ? "" : "s"}…` });
         for (const h of hits) {
-          if (!sourceMap.has(h.url)) sourceMap.set(h.url, { url: h.url, title: h.title });
+          if (!sourceMap.has(h.url)) {
+            sourceMap.set(h.url, { url: h.url, title: h.title, ...(h.image ? { image: h.image } : {}) });
+          }
         }
         if (hits.length > 0) {
           const block = buildSearchContextBlock(query, hits);

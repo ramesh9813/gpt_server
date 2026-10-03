@@ -7,7 +7,7 @@ import { generateFollowups, isFollowupsEnabled } from "../followups";
 import { getAvailableTools, executeMcpTool, type LlmToolDef } from "../../llm/toolBridge";
 import { RESEARCH_SYSTEM_PROMPT, WEB_SEARCH_SYSTEM_PROMPT } from "../chatPrompts";
 import { redactForLog, type OpenRouterMessage } from "../chatMappers";
-import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../../lib/websearch";
+import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../../lib/websearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../../lib/youtubeTranscript";
 import { fetchLinkedPages } from "../../../lib/pageContent";
@@ -76,7 +76,7 @@ export const streamOpenRouterCompletion = async (
   let assistantReasoning = "";
   let lastPersistedLength = 0;
   let lastPersistedAt = Date.now();
-  const sourceMap = new Map<string, { title: string; url: string }>();
+  const sourceMap = new Map<string, { title: string; url: string; image?: string }>();
   let searchNotice: string | null = null;
 
   const collectAnnotations = (chunk: any) => {
@@ -162,12 +162,17 @@ export const streamOpenRouterCompletion = async (
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
-        const { hits } = await performWebSearchWithProvider(query, 5, searchProvider);
+        const { hits: rawHits } = await performWebSearchWithProvider(query, 5, searchProvider);
+        const hits = await enrichWithImages(rawHits);
         hits.forEach((h, i) =>
           sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url) })
         );
+        const photoCount = hits.filter((h) => h.image).length;
+        if (photoCount > 0) sendEvent("stage", { text: `Adding ${photoCount} photo${photoCount === 1 ? "" : "s"}…` });
         for (const h of hits) {
-          if (!sourceMap.has(h.url)) sourceMap.set(h.url, { url: h.url, title: h.title });
+          if (!sourceMap.has(h.url)) {
+            sourceMap.set(h.url, { url: h.url, title: h.title, ...(h.image ? { image: h.image } : {}) });
+          }
         }
         if (hits.length > 0) {
           const block = buildSearchContextBlock(query, hits);

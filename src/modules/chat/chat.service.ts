@@ -12,7 +12,7 @@ import { imageDataUrlSchema, MAX_IMAGES } from "../../lib/imageValidation";
 import { fileAttachmentsSchema } from "../../lib/fileAttachments";
 import { combineFilesIntoPrompt } from "../../lib/fileAttachments";
 import { TOKEN } from "../../lib/constants";
-import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../lib/websearch";
+import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../lib/websearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
 import { resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
@@ -178,7 +178,7 @@ export const streamOpenRouterCompletion = async (
   let lastPersistedAt = Date.now();
   // Web-search citations collected from the provider stream (url_citation
   // annotations), plus a user-facing notice when search couldn't run.
-  const sourceMap = new Map<string, { title: string; url: string }>();
+  const sourceMap = new Map<string, { title: string; url: string; image?: string }>();
   let searchNotice: string | null = null;
   const collectAnnotations = (chunk: any) => {
     const anns = chunk?.choices?.[0]?.delta?.annotations;
@@ -270,12 +270,17 @@ export const streamOpenRouterCompletion = async (
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
-        const { hits } = await performWebSearchWithProvider(query, 5, searchProvider);
+        const { hits: rawHits } = await performWebSearchWithProvider(query, 5, searchProvider);
+        const hits = await enrichWithImages(rawHits);
         hits.forEach((h, i) =>
           sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url) })
         );
+        const photoCount = hits.filter((h) => h.image).length;
+        if (photoCount > 0) sendEvent("stage", { text: `Adding ${photoCount} photo${photoCount === 1 ? "" : "s"}…` });
         for (const h of hits) {
-          if (!sourceMap.has(h.url)) sourceMap.set(h.url, { url: h.url, title: h.title });
+          if (!sourceMap.has(h.url)) {
+            sourceMap.set(h.url, { url: h.url, title: h.title, ...(h.image ? { image: h.image } : {}) });
+          }
         }
         if (hits.length > 0) {
           const block = buildSearchContextBlock(query, hits);

@@ -1,7 +1,7 @@
 // Brave search integration: intent detection + llm/context mapping.
 /// <reference types="jest" />
 import { env } from "../src/lib/config";
-import { wantsWebSearch, wantsYouTubeSearch } from "../src/lib/websearch";
+import { enrichWithImages, extractOgImage, wantsWebSearch, wantsYouTubeSearch, youTubeVideoIdFromUrl } from "../src/lib/websearch";
 import { performWebSearch } from "../src/lib/websearch";
 import { ensureSingleSourcesSection } from "../src/lib/websearch";
 import { isSearchProvider, providerOrder, resolveSearchProvider } from "../src/lib/searchSettings";
@@ -222,6 +222,56 @@ describe("performWebSearch via YouTube", () => {
     expect(wantsYouTubeSearch("movie trailer")).toBe(true);
     expect(wantsYouTubeSearch("generate a video of a sunset")).toBe(false);
     expect(wantsYouTubeSearch("search today news")).toBe(false);
+  });
+});
+
+describe("result photos", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it("extracts og:image and resolves relative urls", () => {
+    expect(
+      extractOgImage(`<meta property="og:image" content="https://cdn.example/p.jpg">`, "https://a.com/x")
+    ).toBe("https://cdn.example/p.jpg");
+    expect(
+      extractOgImage(`<meta name="twitter:image" content="/img/t.png">`, "https://a.com/x")
+    ).toBe("https://a.com/img/t.png");
+    expect(extractOgImage(`<meta property="og:title" content="nope">`, "https://a.com")).toBeNull();
+    expect(extractOgImage(`<meta property="og:image" content="data:image/png;base64,xx">`, "https://a.com")).toBeNull();
+  });
+
+  it("uses YouTube thumbnails without fetching", async () => {
+    (global as any).fetch = jest.fn(() => {
+      throw new Error("must not fetch");
+    });
+    const out = await enrichWithImages([
+      { title: "V", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", snippet: "" },
+    ]);
+    expect(out[0].image).toBe("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg");
+  });
+
+  it("attaches og:image from result pages, keeps misses imageless", async () => {
+    (global as any).fetch = jest.fn().mockImplementation((url: string) => {
+      if (String(url).includes("with-photo")) {
+        return {
+          ok: true,
+          headers: { get: () => "text/html" },
+          text: async () => `<meta property="og:image" content="https://cdn.example/1.jpg">`,
+        };
+      }
+      return { ok: false, headers: { get: () => null }, text: async () => "" };
+    });
+    const out = await enrichWithImages([
+      { title: "A", url: "https://with-photo.example/a", snippet: "" },
+      { title: "B", url: "https://plain.example/b", snippet: "" },
+    ]);
+    expect(out[0].image).toBe("https://cdn.example/1.jpg");
+    expect(out[1].image).toBeUndefined();
+  });
+
+  it("parses youtube ids for thumbnails", () => {
+    expect(youTubeVideoIdFromUrl("https://youtu.be/dQw4w9WgXcQ")).toBe("dQw4w9WgXcQ");
+    expect(youTubeVideoIdFromUrl("https://www.youtube.com/shorts/abc123XYZ_-")).toBe("abc123XYZ_-");
+    expect(youTubeVideoIdFromUrl("https://example.com")).toBeNull();
   });
 });
 

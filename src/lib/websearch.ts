@@ -7,7 +7,7 @@
 
 import { env } from "./config";
 
-export type WebResult = { title: string; url: string; snippet: string };
+export type WebResult = { title: string; url: string; snippet: string; image?: string };
 
 const UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
@@ -347,6 +347,65 @@ const wikipediaSearch = async (query: string, max: number): Promise<WebResult[]>
   } catch {
     return [];
   }
+};
+
+// Result photos: Open Graph / Twitter card image of a result page, resolved
+// to an absolute URL. Pure (unit-tested) — network lives in enrich below.
+export const extractOgImage = (html: string, pageUrl: string): string | null => {
+  const pick = (re: RegExp): string | null => {
+    const m = html.match(re);
+    return m?.[1]?.trim() || null;
+  };
+  const raw =
+    pick(/<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]+content=["']([^"']+)["']/i) ||
+    pick(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image(?::secure_url)?["']/i) ||
+    pick(/<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["']/i) ||
+    pick(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["']/i);
+  if (!raw || raw.startsWith("data:")) return null;
+  try {
+    const abs = new URL(raw, pageUrl).toString();
+    if (!/^https?:\/\//i.test(abs) || abs.length > 500) return null;
+    return abs;
+  } catch {
+    return null;
+  }
+};
+
+export const youTubeVideoIdFromUrl = (url: string): string | null => {
+  const m = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  return m?.[1] ?? null;
+};
+
+// Photos for result hits, best-effort and parallel: YouTube videos get their
+// free thumbnail; other pages get their og:image (one quick fetch each).
+// Never throws — hits without a photo simply carry none.
+export const enrichWithImages = async (hits: WebResult[], max = 5): Promise<WebResult[]> => {
+  const jobs = hits.slice(0, max).map(async (h): Promise<WebResult> => {
+    try {
+      const ytId = youTubeVideoIdFromUrl(h.url);
+      if (ytId) return { ...h, image: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg` };
+      const res = await fetch(h.url, {
+        headers: { "User-Agent": UA, Accept: "text/html" },
+        signal: AbortSignal.timeout(6000),
+        redirect: "follow",
+      });
+      if (!res.ok) return h;
+      const type = res.headers.get("content-type") ?? "";
+      if (type && !/text\/html/i.test(type)) {
+        // Direct image link — use it as its own photo.
+        if (/image\//i.test(type)) return { ...h, image: h.url };
+        return h;
+      }
+      const html = await res.text();
+      if (!html) return h;
+      const image = extractOgImage(html.slice(0, 300000), h.url);
+      return image ? { ...h, image } : h;
+    } catch {
+      return h;
+    }
+  });
+  const enriched = await Promise.all(jobs);
+  return [...enriched, ...hits.slice(max)];
 };
 
 // Prompt block injected ahead of the model call so even providers with no
