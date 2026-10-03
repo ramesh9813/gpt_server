@@ -12,7 +12,7 @@ import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisio
 import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
-import { buildSearchContextBlock, performWebSearch, wantsWebSearch } from "../../lib/websearch";
+import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearch, wantsWebSearch } from "../../lib/websearch";
 import { resolveSearchProvider } from "../../lib/searchSettings";
 
 // ---- entry point ------------------------------------------------------------
@@ -491,7 +491,10 @@ export const streamByokCompletion = async (
 
     const sources = [...sourceMap.values()];
     // Bottom links render from the persisted `sources` row (client plain
-    // list) — no body footer, so URLs never appear twice.
+    // list) — no body footer, so URLs never appear twice. A model-written
+    // trailing Sources section is still swapped for the canonical URL list
+    // so the bubble never shows two lists either.
+    assistantContent = ensureSingleSourcesSection(assistantContent, sources, false);
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: {

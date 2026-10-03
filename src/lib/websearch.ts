@@ -303,3 +303,57 @@ export const appendSourcesFooter = (
   const lines = sources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`);
   return `${content.replace(/\s+$/, "")}\n\nSources:\n${lines.join("\n")}`;
 };
+
+// A trailing "Sources"/"References" section the model wrote itself (titles,
+// often without URLs). Matches headings like `Sources:`, `**Sources:**`,
+// `**Sources**:`, `## References` — case-insensitive, colon/bold markers in
+// either order.
+const SOURCES_HEADING_RE = /(?:^|\n)\s*(?:#{1,4}\s*)?(?:\*\*|__)?(sources?|references?)(?:\s*:?\s*(?:\*\*|__)?)*\s*(?:\n|$)/gi;
+
+// One list only: when the model already ended with its own Sources section
+// AND we hold structured sources (real URLs), swap its section for the
+// canonical URL list instead of appending a second one. Conservative: the
+// tail must look like a reference list (list items / links / short lines),
+// otherwise the text is left untouched.
+export const ensureSingleSourcesSection = (
+  content: string,
+  sources: Array<{ title: string; url: string }>,
+  appendIfMissing = true
+): string => {
+  if (sources.length === 0) return content;
+  const fallback = appendIfMissing ? appendSourcesFooter(content, sources) : content;
+  const text = content.replace(/\s+$/, "");
+  SOURCES_HEADING_RE.lastIndex = 0;
+  let last: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = SOURCES_HEADING_RE.exec(text)) !== null) last = m;
+  if (!last) return fallback;
+  const tail = text.slice(last.index + last[0].length);
+  if (!tail.trim() || tail.length > 2000) return fallback;
+  const lines = tail.split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return fallback;
+  const listLike = (l: string): boolean =>
+    /^\s*(?:[-*•–—]|\d+[.)\]}])\s*\S/.test(l) ||
+    /\[[^\]]+\]\([^)]+\)/.test(l) ||
+    /https?:\/\/\S/.test(l) ||
+    /^\s*[\w-]+(\.[\w-]+)+\b/.test(l) ||
+    l.trim().length <= 160;
+  const strongListLike = (l: string): boolean =>
+    /^\s*(?:[-*•–—]|\d+[.)\]}])\s*\S/.test(l) ||
+    /\[[^\]]+\]\([^)]+\)/.test(l) ||
+    /https?:\/\/\S/.test(l);
+  // Bare title lines ("The Kathmandu Post") carry no markers — accept them
+  // only as a group: 2+ short lines, none ending like a prose sentence.
+  const titleLike = (l: string): boolean => {
+    const t = l.trim();
+    return t.length > 0 && t.length <= 120 && !/[.?!…]\s*$/.test(t);
+  };
+  const looksLikeList =
+    lines.every(listLike) &&
+    (lines.some(strongListLike) ||
+      (lines.length >= 2 && lines.every(titleLike)));
+  if (!looksLikeList) return fallback;
+  const head = text.slice(0, last.index).replace(/\s+$/, "");
+  const canonical = sources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join("\n");
+  return `${head}\n\nSources:\n${canonical}`;
+};

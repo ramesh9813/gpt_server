@@ -12,7 +12,7 @@ import { imageDataUrlSchema, MAX_IMAGES } from "../../lib/imageValidation";
 import { fileAttachmentsSchema } from "../../lib/fileAttachments";
 import { combineFilesIntoPrompt } from "../../lib/fileAttachments";
 import { TOKEN } from "../../lib/constants";
-import { buildSearchContextBlock, performWebSearch, wantsWebSearch } from "../../lib/websearch";
+import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearch, wantsWebSearch } from "../../lib/websearch";
 import { resolveSearchProvider } from "../../lib/searchSettings";
 
 export const streamSchema = z
@@ -496,7 +496,10 @@ export const streamOpenRouterCompletion = async (
     }
     const sources = [...sourceMap.values()];
     // Bottom links render from the persisted `sources` row (client plain
-    // list) — no body footer, so URLs never appear twice.
+    // list) — no body footer, so URLs never appear twice. A model-written
+    // trailing Sources section is still swapped for the canonical URL list
+    // so the bubble never shows two lists either.
+    assistantContent = ensureSingleSourcesSection(assistantContent, sources, false);
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: {

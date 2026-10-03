@@ -3,6 +3,7 @@
 import { env } from "../src/lib/config";
 import { wantsWebSearch } from "../src/lib/websearch";
 import { performWebSearch } from "../src/lib/websearch";
+import { ensureSingleSourcesSection } from "../src/lib/websearch";
 import { isSearchProvider, providerOrder, resolveSearchProvider } from "../src/lib/searchSettings";
 import { prisma } from "../src/lib/prisma";
 
@@ -121,6 +122,53 @@ describe("performWebSearch via Exa", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({ query: { search: [] } }) });
     const hits = await performWebSearch("test query", 5, "exa");
     expect(Array.isArray(hits)).toBe(true);
+  });
+});
+
+describe("ensureSingleSourcesSection", () => {
+  const sources = [
+    { title: "The Kathmandu Post", url: "https://kathmandupost.com" },
+    { title: "Nepal News", url: "https://english.nepalnews.com" },
+  ];
+
+  it("swaps a model-written titles-only section for the canonical URL list", () => {
+    const body =
+      "Here is the news.\n\nSources\nThe Kathmandu Post\nNepal News\nmyRepublica";
+    const out = ensureSingleSourcesSection(body, sources);
+    expect(out).toContain("Here is the news.");
+    expect(out).toContain("https://kathmandupost.com");
+    expect(out).toContain("https://english.nepalnews.com");
+    expect(out.match(/^Sources:$/gim)).toHaveLength(1);
+    expect(out).not.toContain("myRepublica");
+  });
+
+  it("handles **Sources:** and ## References headings", () => {
+    const out = ensureSingleSourcesSection(
+      "Answer.\n\n**Sources:**\n- Item one\n- Item two",
+      sources
+    );
+    expect(out.match(/sources:/gi)).toHaveLength(1);
+    expect(out).toContain("https://kathmandupost.com");
+  });
+
+  it("appends the footer when the model wrote no section", () => {
+    const out = ensureSingleSourcesSection("Just an answer.", sources);
+    expect(out).toContain("Just an answer.");
+    expect(out).toContain("Sources:");
+    expect(out).toContain("https://kathmandupost.com");
+  });
+
+  it("leaves prose after a mid-text heading alone", () => {
+    const body = "My sources are many. Sources of income include salary and rent which pay monthly.";
+    const out = ensureSingleSourcesSection(body, sources);
+    expect(out).toContain("My sources are many.");
+  });
+
+  it("appendIfMissing=false only swaps, never appends", () => {
+    expect(ensureSingleSourcesSection("Just an answer.", sources, false)).toBe("Just an answer.");
+    const swapped = ensureSingleSourcesSection("Answer.\n\nSources:\n- Old item", sources, false);
+    expect(swapped).toContain("https://kathmandupost.com");
+    expect(swapped).not.toContain("Old item");
   });
 });
 

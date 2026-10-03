@@ -7,7 +7,7 @@ import { generateFollowups, isFollowupsEnabled } from "../followups";
 import { getAvailableTools, executeMcpTool, type LlmToolDef } from "../../llm/toolBridge";
 import { RESEARCH_SYSTEM_PROMPT, WEB_SEARCH_SYSTEM_PROMPT } from "../chatPrompts";
 import { redactForLog, type OpenRouterMessage } from "../chatMappers";
-import { appendSourcesFooter, buildSearchContextBlock, performWebSearch, wantsWebSearch } from "../../../lib/websearch";
+import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearch, wantsWebSearch } from "../../../lib/websearch";
 import { resolveSearchProvider } from "../../../lib/searchSettings";
 
 type PendingToolCall = { id: string; name: string; arguments: string };
@@ -273,8 +273,9 @@ export const streamOpenRouterCompletion = async (
       ] as unknown as OpenRouterMessage[];
     }
     const sources = [...sourceMap.values()];
-    // Footer guarantees searched-page URLs at the bottom of the bubble.
-    const withFooter = appendSourcesFooter(assistantContent, sources);
+    // One list only: a model-written trailing Sources section is swapped for
+    // the canonical URL list, otherwise the footer is appended as before.
+    const withFooter = ensureSingleSourcesSection(assistantContent, sources);
     if (withFooter !== assistantContent) {
       sendEvent("token", { delta: withFooter.slice(assistantContent.length) });
       assistantContent = withFooter;
