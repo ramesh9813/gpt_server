@@ -13,6 +13,7 @@ import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
 import { buildSearchContextBlock, performWebSearch, wantsWebSearch } from "../../lib/websearch";
+import { resolveSearchProvider } from "../../lib/searchSettings";
 
 // ---- entry point ------------------------------------------------------------
 
@@ -86,7 +87,8 @@ export const streamByokCompletion = async (
     const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
     if (query) {
       try {
-        const hits = await performWebSearch(query, 5);
+        const searchProvider = await resolveSearchProvider((req as any).user?.id);
+        const hits = await performWebSearch(query, 5, searchProvider);
         for (const h of hits) {
           if (!sourceMap.has(h.url)) sourceMap.set(h.url, { url: h.url, title: h.title });
         }

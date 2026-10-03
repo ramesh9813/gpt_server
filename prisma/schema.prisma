@@ -49,6 +49,7 @@ model UserSettings {
   showTopCard             Boolean   @default(true)
   showScrollJump          Boolean   @default(true)
   showFollowups           Boolean   @default(true)
+  searchProvider          String    @default("auto")
   appFontSize             Int       @default(18)
   iconScale               Float     @default(1)
   devicePhotosFolder      String?   @map("device_photos_folder")

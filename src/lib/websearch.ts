@@ -153,15 +153,81 @@ const performBraveSearch = async (query: string, max: number): Promise<WebResult
   }
 };
 
-export const performWebSearch = async (query: string, max = 5): Promise<WebResult[]> => {
+export const performWebSearch = async (
+  query: string,
+  max = 5,
+  provider: "auto" | "brave" | "exa" | "duckduckgo" = "auto"
+): Promise<WebResult[]> => {
   const q = query.trim().slice(0, 500);
   if (!q) return [];
-  // 0) Brave AI grounding when a key is configured — best content.
-  if (env.BRAVE_API_KEY?.trim()) {
-    const brave = await performBraveSearch(q, max);
-    if (brave.length > 0) return brave;
-    // fall through to the keyless chain on failure/empty
+  // Provider chain: explicit pick first, then the rest in auto order.
+  // Missing keys and failures fall through to the next provider.
+  const order =
+    provider === "auto" || (provider !== "brave" && provider !== "exa" && provider !== "duckduckgo")
+      ? (["brave", "exa", "duckduckgo"] as const)
+      : ([provider, ...(["brave", "exa", "duckduckgo"] as const).filter((p) => p !== provider)] as const);
+  for (const p of order) {
+    if (p === "brave" && env.BRAVE_API_KEY?.trim()) {
+      const brave = await performBraveSearch(q, max);
+      if (brave.length > 0) return brave;
+    } else if (p === "exa" && env.EXA_API_KEY?.trim()) {
+      const exa = await performExaSearch(q, max);
+      if (exa.length > 0) return exa;
+    } else if (p === "duckduckgo") {
+      const ddg = await performDuckDuckGo(q, max);
+      if (ddg.length > 0) return ddg;
+    }
   }
+  return [];
+};
+
+// Exa AI search (RAG-optimized highlights): POST /search with a Bearer key.
+// Token-lean by design — highlights only, a few results max.
+const performExaSearch = async (query: string, max: number): Promise<WebResult[]> => {
+  const key = env.EXA_API_KEY?.trim();
+  if (!key) return [];
+  try {
+    const res = await fetch("https://api.exa.ai/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+        "User-Agent": UA,
+      },
+      body: JSON.stringify({
+        query,
+        numResults: Math.min(Math.max(max, 1), 10),
+        contents: { highlights: true },
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return [];
+    const j = (await res.json()) as any;
+    const items: any[] = Array.isArray(j?.results) ? j.results : [];
+    const out: WebResult[] = [];
+    for (const r of items) {
+      const url = typeof r?.url === "string" ? r.url : "";
+      if (!/^https?:\/\//i.test(url)) continue;
+      if (out.some((x) => x.url === url)) continue;
+      const highlights: string[] = Array.isArray(r?.highlights)
+        ? r.highlights.filter((s: unknown): s is string => typeof s === "string" && s.trim().length > 0)
+        : [];
+      const text = typeof r?.text === "string" ? r.text : "";
+      const snippet = (highlights.join(" ") || text).slice(0, 600);
+      out.push({
+        title: String(r?.title || url).slice(0, 200),
+        url,
+        snippet,
+      });
+      if (out.length >= max) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+};
+
+const performDuckDuckGo = async (query: string, max: number): Promise<WebResult[]> => {
   // 1) HTML results (real web links) — primary.
   try {
     const res = await fetch("https://html.duckduckgo.com/html/", {
@@ -170,7 +236,7 @@ export const performWebSearch = async (query: string, max = 5): Promise<WebResul
         "User-Agent": UA,
         "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: `q=${encodeURIComponent(q)}`,
+      body: `q=${encodeURIComponent(query)}`,
       signal: AbortSignal.timeout(9000),
     });
     if (res.ok) {
@@ -182,11 +248,11 @@ export const performWebSearch = async (query: string, max = 5): Promise<WebResul
     // fall through to instant-answer fallback
   }
   // 2) Instant-answer fallback (abstract + related) — no scraping.
-  const instant = await ddgInstantAnswer(q);
+  const instant = await ddgInstantAnswer(query);
   if (instant.length > 0) return instant.slice(0, max);
   // 3) Wikipedia fallback — reliable API, real page URLs, so a searched
   // answer almost always has bottom links even when DuckDuckGo is blocked.
-  return wikipediaSearch(q, max);
+  return wikipediaSearch(query, max);
 };
 
 // Wikipedia opensearch-style fallback via the query API (no key needed).

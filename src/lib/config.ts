@@ -68,6 +68,8 @@ const envSchema = z.object({
   // Brave's llm/context endpoint; otherwise the keyless DuckDuckGo chain is
   // used. Render env var name: BRAVE_API_KEY.
   BRAVE_API_KEY: z.string().default(""),
+  // Exa AI search (RAG-optimized highlights). Render env var: EXA_API_KEY.
+  EXA_API_KEY: z.string().default(""),
   RUNNER_PROVIDER: z.enum(["piston", "wandbox"]).default("wandbox"),
   RUNNER_BASE_URL: httpsUrl("https://emkc.org/api/v2/piston"),
   WANDBOX_BASE_URL: httpsUrl("https://wandbox.org"),
