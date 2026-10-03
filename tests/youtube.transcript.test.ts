@@ -132,6 +132,36 @@ describe("fetchYouTubeTranscript", () => {
 describe("fetchYouTubeTranscriptDetailed", () => {
   afterEach(() => jest.restoreAllMocks());
 
+  it("falls back to the TV client when IOS is bot-gated", async () => {
+    (global as any).fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ playabilityStatus: { status: "LOGIN_REQUIRED", reason: "bot check" } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          videoDetails: { title: "TV OK" },
+          captions: {
+            playerCaptionsTracklistRenderer: {
+              captionTracks: [{ baseUrl: "https://caps.example/tv", languageCode: "en" }],
+            },
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => `<transcript><text start="0" dur="1">tv fallback works</text></transcript>`,
+      });
+    const r = await fetchYouTubeTranscriptDetailed("dQw4w9WgXcQ");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.transcript.title).toBe("TV OK");
+      expect(r.transcript.text).toBe("tv fallback works");
+    }
+  });
+
   it("reports unplayable videos", async () => {
     (global as any).fetch = jest.fn().mockResolvedValue({
       ok: true,

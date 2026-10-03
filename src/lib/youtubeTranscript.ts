@@ -5,6 +5,7 @@
 // a video link asking to transcribe it, the full text is injected so the
 // model answers from (or reproduces) the exact words.
 import type { WebResult } from "./websearch";
+import { logger } from "./logger";
 
 const UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
@@ -128,18 +129,23 @@ export type TranscriptFetchResult =
 
 type PlayerData = { title: string; tracks: CaptionTrack[] } | null;
 
-const fetchPlayerViaInnerTube = async (videoId: string, lang: string): Promise<{ data: any } | null> => {
+const fetchPlayerViaInnerTube = async (
+  videoId: string,
+  lang: string,
+  preset: "ios" | "tv" = "ios"
+): Promise<{ data: any } | null> => {
+  const client =
+    preset === "tv"
+      ? { clientName: "TVHTML5", clientVersion: "7.20241024", hl: lang, gl: "US" }
+      : { ...INNERTUBE_CONTEXT.client, hl: lang };
   try {
     const res = await fetch(INNERTUBE_PLAYER_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "User-Agent": IOS_UA },
-      body: JSON.stringify({
-        context: {
-          ...INNERTUBE_CONTEXT,
-          client: { ...INNERTUBE_CONTEXT.client, hl: lang },
-        },
-        videoId,
-      }),
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": preset === "tv" ? UA : IOS_UA,
+      },
+      body: JSON.stringify({ context: { client }, videoId }),
       signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) return null;
@@ -218,17 +224,32 @@ export const fetchYouTubeTranscriptDetailed = async (
   videoId: string,
   lang = "en"
 ): Promise<TranscriptFetchResult> => {
-  const inner = await fetchPlayerViaInnerTube(videoId, lang);
+  // IOS first (caption URLs work without extra auth), then the TV client
+  // (often passes bot-checks that fail datacenter IPs on other clients),
+  // then the watch-page scrape. First playable response with tracks wins.
+  const attempts: Array<{ data: any } | null> = [await fetchPlayerViaInnerTube(videoId, lang, "ios")];
+  const firstStatus = attempts[0]?.data?.playabilityStatus?.status;
+  if (!attempts[0] || (firstStatus && firstStatus !== "OK")) {
+    attempts.push(await fetchPlayerViaInnerTube(videoId, lang, "tv"));
+  }
   let title = "";
   let tracks: CaptionTrack[] = [];
-  if (inner) {
-    const status = inner.data?.playabilityStatus?.status;
-    if (status === "LOGIN_REQUIRED" || status === "UNPLAYABLE" || status === "ERROR") {
-      return { ok: false, reason: "unplayable" };
+  let playable = false;
+  let blockedReason = "";
+  for (const attempt of attempts) {
+    if (!attempt) continue;
+    const status = attempt.data?.playabilityStatus?.status;
+    if (status && status !== "OK") {
+      blockedReason = String(attempt.data?.playabilityStatus?.reason ?? status).slice(0, 200);
+      continue;
     }
-    const parsed = playerDataToTracks(inner.data);
-    title = parsed.title;
-    tracks = Array.isArray(parsed.tracks) ? parsed.tracks : [];
+    playable = true;
+    const parsed = playerDataToTracks(attempt.data);
+    if (parsed.title) title = parsed.title;
+    if (Array.isArray(parsed.tracks) && parsed.tracks.length > 0) {
+      tracks = parsed.tracks;
+      break;
+    }
   }
   if (tracks.length === 0) {
     // InnerTube throttled/empty for this network — try the watch page once.
@@ -238,8 +259,14 @@ export const fetchYouTubeTranscriptDetailed = async (
       tracks = viaWatch.tracks;
     }
   }
-  if (inner === null && tracks.length === 0) return { ok: false, reason: "unreachable" };
-  if (tracks.length === 0) return { ok: false, reason: "no-captions" };
+  if (tracks.length === 0) {
+    // Log the cause server-side: distinguishes genuine no-captions from
+    // datacenter-IP bot gating (Render logs will show the reason).
+    logger.warn({ videoId, playable, blockedReason: blockedReason || undefined }, "YouTube transcript unavailable");
+    if (!playable && attempts.every((a) => a === null)) return { ok: false, reason: "unreachable" };
+    if (!playable) return { ok: false, reason: "unplayable" };
+    return { ok: false, reason: "no-captions" };
+  }
   const track = pickCaptionTrack(tracks, lang);
   if (!track?.baseUrl) return { ok: false, reason: "no-captions" };
   try {
