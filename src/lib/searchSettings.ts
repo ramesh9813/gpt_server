@@ -4,18 +4,21 @@
 // websearch.ts stays dependency-light for unit tests.
 import { prisma } from "./prisma";
 
-export const SEARCH_PROVIDERS = ["auto", "brave", "exa", "duckduckgo"] as const;
+export const SEARCH_PROVIDERS = ["auto", "brave", "exa", "youtube", "duckduckgo"] as const;
 export type SearchProvider = (typeof SEARCH_PROVIDERS)[number];
 
 export const isSearchProvider = (v: unknown): v is SearchProvider =>
   typeof v === "string" && (SEARCH_PROVIDERS as readonly string[]).includes(v);
 
 // Auto order preserves previous behavior: Brave first (was the only keyed
-// provider), then Exa, then keyless DuckDuckGo. An explicit pick still falls
-// back down the chain when its key is missing/failing.
-export const providerOrder = (provider: SearchProvider): Array<"brave" | "exa" | "duckduckgo"> => {
+// provider), then Exa, then keyless DuckDuckGo. YouTube joins auto only on
+// video intent (see wantsYouTubeSearch in websearch.ts). An explicit pick
+// still falls back down the chain when its key is missing/failing.
+export const providerOrder = (provider: SearchProvider): Array<"brave" | "exa" | "youtube" | "duckduckgo"> => {
   const auto: Array<"brave" | "exa" | "duckduckgo"> = ["brave", "exa", "duckduckgo"];
-  if (provider === "auto" || !auto.includes(provider as "brave")) return auto;
+  if (provider === "auto") return auto;
+  if (provider === "youtube") return ["youtube", ...auto];
+  if (!(auto as readonly string[]).includes(provider)) return auto;
   return [provider as "brave" | "exa" | "duckduckgo", ...auto.filter((p) => p !== provider)];
 };
 

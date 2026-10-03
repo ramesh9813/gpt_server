@@ -1,7 +1,7 @@
 // Brave search integration: intent detection + llm/context mapping.
 /// <reference types="jest" />
 import { env } from "../src/lib/config";
-import { wantsWebSearch } from "../src/lib/websearch";
+import { wantsWebSearch, wantsYouTubeSearch } from "../src/lib/websearch";
 import { performWebSearch } from "../src/lib/websearch";
 import { ensureSingleSourcesSection } from "../src/lib/websearch";
 import { isSearchProvider, providerOrder, resolveSearchProvider } from "../src/lib/searchSettings";
@@ -172,12 +172,67 @@ describe("ensureSingleSourcesSection", () => {
   });
 });
 
+describe("performWebSearch via YouTube", () => {
+  const OLD_YT = (env as any).YOUTUBE_API_KEY;
+  afterEach(() => {
+    jest.restoreAllMocks();
+    (env as any).YOUTUBE_API_KEY = OLD_YT;
+  });
+
+  it("queries the Data API and maps videos to watch URLs", async () => {
+    (env as any).YOUTUBE_API_KEY = "test-yt-key";
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: [
+          {
+            id: { videoId: "abc123" },
+            snippet: { title: "Cool video", description: "Desc here", channelTitle: "Chan" },
+          },
+          { id: {}, snippet: {} },
+        ],
+      }),
+    });
+    const hits = await performWebSearch("funny cats", 5, "youtube");
+    expect(hits).toHaveLength(1);
+    expect(hits[0].url).toBe("https://www.youtube.com/watch?v=abc123");
+    expect(hits[0].title).toBe("Cool video");
+    expect(hits[0].snippet).toContain("Chan");
+    const calls = ((global as any).fetch as jest.Mock).mock.calls;
+    expect(calls[0][0]).toContain("www.googleapis.com/youtube/v3/search");
+    expect(calls[0][0]).toContain("key=test-yt-key");
+  });
+
+  it("auto-routes video intent to YouTube", async () => {
+    (env as any).YOUTUBE_API_KEY = "test-yt-key";
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: [{ id: { videoId: "v1" }, snippet: { title: "T", description: "D" } }],
+      }),
+    });
+    const hits = await performWebSearch("watch the match trailer", 5, "auto");
+    expect(hits).toHaveLength(1);
+    expect(hits[0].url).toContain("youtube.com/watch");
+  });
+
+  it("detects video intent without catching generation prompts", () => {
+    expect(wantsYouTubeSearch("watch the finals highlights")).toBe(true);
+    expect(wantsYouTubeSearch("best nepali song")).toBe(true);
+    expect(wantsYouTubeSearch("movie trailer")).toBe(true);
+    expect(wantsYouTubeSearch("generate a video of a sunset")).toBe(false);
+    expect(wantsYouTubeSearch("search today news")).toBe(false);
+  });
+});
+
 describe("providerOrder / resolveSearchProvider", () => {
   it("orders explicit picks first, auto keeps Brave first", () => {
     expect(providerOrder("auto")).toEqual(["brave", "exa", "duckduckgo"]);
     expect(providerOrder("exa")).toEqual(["exa", "brave", "duckduckgo"]);
+    expect(providerOrder("youtube")).toEqual(["youtube", "brave", "exa", "duckduckgo"]);
     expect(providerOrder("duckduckgo")).toEqual(["duckduckgo", "brave", "exa"]);
     expect(isSearchProvider("exa")).toBe(true);
+    expect(isSearchProvider("youtube")).toBe(true);
     expect(isSearchProvider("nope")).toBe(false);
   });
 

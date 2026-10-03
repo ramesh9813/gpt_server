@@ -70,6 +70,8 @@ const envSchema = z.object({
   BRAVE_API_KEY: z.string().default(""),
   // Exa AI search (RAG-optimized highlights). Render env var: EXA_API_KEY.
   EXA_API_KEY: z.string().default(""),
+  // YouTube Data API v3 (video search). Render env var: YOUTUBE_API_KEY.
+  YOUTUBE_API_KEY: z.string().default(""),
   RUNNER_PROVIDER: z.enum(["piston", "wandbox"]).default("wandbox"),
   RUNNER_BASE_URL: httpsUrl("https://emkc.org/api/v2/piston"),
   WANDBOX_BASE_URL: httpsUrl("https://wandbox.org"),

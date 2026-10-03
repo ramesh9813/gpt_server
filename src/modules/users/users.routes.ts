@@ -17,7 +17,7 @@ const settingsSchema = z.object({
   showTopCard: z.boolean().optional(),
   showScrollJump: z.boolean().optional(),
   showFollowups: z.boolean().optional(),
-  searchProvider: z.enum(["auto", "brave", "exa", "duckduckgo"]).optional(),
+  searchProvider: z.enum(["auto", "brave", "exa", "youtube", "duckduckgo"]).optional(),
   model: z.string().min(1).max(200).optional(),
   imageModel: z.string().min(1).max(200).optional(),
   videoModel: z.string().min(1).max(200).optional(),

@@ -105,6 +105,62 @@ export const wantsWebSearch = (text: string): boolean => {
   return SEARCH_INTENT_RE.test(t) || CURRENT_PHRASE_RE.test(t) || RECENCY_QUESTION_RE.test(t);
 };
 
+// Video intent: "watch …", "trailer", "song", "vlog" and friends route to
+// YouTube (auto mode) instead of web search. "Video of …" counts only
+// without a generation verb — "generate a video of …" stays a creation
+// prompt, not a watch request.
+const YOUTUBE_EXPLICIT_RE =
+  /\b(youtube|youtu\.?be|watch(\s+this|\s+the|\s+live)?|trailer|teaser|vlog|documentary|song|songs|music\s+video|lyric\s+video|live\s+stream)\b/i;
+const YOUTUBE_VIDEOS_OF_RE = /\bvideos?\s+(of|about|on|for)\b/i;
+const GENERATION_VERB_RE = /\b(generat\w*|creat\w*|make|making|draw|paint|render|produc\w*|direct|film|animate)\b/i;
+
+export const wantsYouTubeSearch = (text: string): boolean => {
+  const t = (text || "").slice(0, 1000);
+  if (!t.trim()) return false;
+  if (YOUTUBE_EXPLICIT_RE.test(t)) return true;
+  return YOUTUBE_VIDEOS_OF_RE.test(t) && !GENERATION_VERB_RE.test(t);
+};
+
+// YouTube Data API v3 video search: key travels as the `key` query param
+// (Data API keys are quota-limited — 100 units per search call — so results
+// stay capped and failures fall through to the next provider).
+const performYouTubeSearch = async (query: string, max: number): Promise<WebResult[]> => {
+  const key = env.YOUTUBE_API_KEY?.trim();
+  if (!key) return [];
+  try {
+    const params = new URLSearchParams({
+      part: "snippet",
+      q: query,
+      type: "video",
+      order: "relevance",
+      safeSearch: "moderate",
+      maxResults: String(Math.min(Math.max(max, 1), 10)),
+      key,
+    });
+    const res = await fetch(`https://www.googleapis.com/youtube/v3/search?${params.toString()}`, {
+      headers: { Accept: "application/json", "User-Agent": UA },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return [];
+    const j = (await res.json()) as any;
+    const items: any[] = Array.isArray(j?.items) ? j.items : [];
+    const out: WebResult[] = [];
+    for (const it of items) {
+      const videoId = typeof it?.id?.videoId === "string" ? it.id.videoId : "";
+      if (!videoId || out.some((r) => r.url.includes(videoId))) continue;
+      const sn = it?.snippet ?? {};
+      const title = String(sn?.title || "YouTube video").slice(0, 200);
+      const channel = typeof sn?.channelTitle === "string" && sn.channelTitle ? ` — ${sn.channelTitle}` : "";
+      const snippet = `${String(sn?.description || "").slice(0, 400)}${channel}`.slice(0, 600);
+      out.push({ title, url: `https://www.youtube.com/watch?v=${videoId}`, snippet });
+      if (out.length >= max) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+};
+
 // Brave AI grounding (llm/context): pre-extracted page content optimized
 // for RAG, keyed by the X-Subscription-Token header. Lean budgets — this
 // lands inside the model prompt, so ~3k tokens / 5 URLs max.
@@ -156,18 +212,27 @@ const performBraveSearch = async (query: string, max: number): Promise<WebResult
 export const performWebSearch = async (
   query: string,
   max = 5,
-  provider: "auto" | "brave" | "exa" | "duckduckgo" = "auto"
+  provider: "auto" | "brave" | "exa" | "youtube" | "duckduckgo" = "auto"
 ): Promise<WebResult[]> => {
   const q = query.trim().slice(0, 500);
   if (!q) return [];
   // Provider chain: explicit pick first, then the rest in auto order.
-  // Missing keys and failures fall through to the next provider.
-  const order =
-    provider === "auto" || (provider !== "brave" && provider !== "exa" && provider !== "duckduckgo")
-      ? (["brave", "exa", "duckduckgo"] as const)
-      : ([provider, ...(["brave", "exa", "duckduckgo"] as const).filter((p) => p !== provider)] as const);
+  // YouTube leads auto only on video intent; missing keys and failures fall
+  // through to the next provider.
+  const base = (["brave", "exa", "duckduckgo"] as const).filter((p) => p !== provider);
+  const order: ReadonlyArray<"brave" | "exa" | "youtube" | "duckduckgo"> =
+    provider === "youtube"
+      ? ["youtube", ...base]
+      : provider === "auto" && wantsYouTubeSearch(q)
+        ? ["youtube", "brave", "exa", "duckduckgo"]
+        : provider === "auto" || (provider !== "brave" && provider !== "exa" && provider !== "duckduckgo")
+          ? ["brave", "exa", "duckduckgo"]
+          : [provider, ...base];
   for (const p of order) {
-    if (p === "brave" && env.BRAVE_API_KEY?.trim()) {
+    if (p === "youtube" && env.YOUTUBE_API_KEY?.trim()) {
+      const yt = await performYouTubeSearch(q, max);
+      if (yt.length > 0) return yt;
+    } else if (p === "brave" && env.BRAVE_API_KEY?.trim()) {
       const brave = await performBraveSearch(q, max);
       if (brave.length > 0) return brave;
     } else if (p === "exa" && env.EXA_API_KEY?.trim()) {
