@@ -37,13 +37,23 @@ export const extractYouTubeVideoId = (text: string): string | null => {
 };
 
 const TRANSCRIBE_WORDS_RE =
-  /\b(transcrib\w*|transcript|captions?|subtitles?|exact\s+text|word\s+for\s+word|what\s+(is\s+|was\s+)?said|summar\w*\s+(this\s+)?video|explain\s+(this\s+)?video)\b/i;
+  /\b(transcrib\w*|transcript|captions?|subtitles?|detail\w*|exact\s+text|word\s+for\s+word|what\s+(is\s+|was\s+)?said|summar\w*(\s+(this\s+)?video)?|explain\s+(this\s+)?video)\b/i;
 
-// A YouTube link plus a transcribe-style ask — not a "watch this" browse.
+// A YouTube link plus either explicit transcribe/detail words or just a
+// short generic ask ("get this one <url>", "this video?") — both mean the
+// user wants the video's content, not a web search. Long messages that merely
+// reference a video fall through to normal handling.
 export const wantsTranscript = (text: string): boolean => {
   const t = (text || "").trim();
   if (!t) return false;
-  return extractYouTubeVideoId(t) !== null && TRANSCRIBE_WORDS_RE.test(t);
+  if (extractYouTubeVideoId(t) === null) return false;
+  if (TRANSCRIBE_WORDS_RE.test(t)) return true;
+  const withoutUrls = t
+    .replace(/https?:\/\/[^\s<>"')\]]+/gi, " ")
+    .replace(/[.,;:!?)\]]+$/, "")
+    .trim();
+  const words = withoutUrls.split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.length <= 12;
 };
 
 const decodeEntities = (s: string): string =>
@@ -110,12 +120,17 @@ export type VideoTranscript = {
   text: string;
 };
 
-export const fetchYouTubeTranscript = async (
-  videoId: string,
-  lang = "en"
-): Promise<VideoTranscript | null> => {
+export type TranscriptFailureReason = "no-captions" | "unreachable" | "unplayable";
+
+export type TranscriptFetchResult =
+  | { ok: true; transcript: VideoTranscript }
+  | { ok: false; reason: TranscriptFailureReason };
+
+type PlayerData = { title: string; tracks: CaptionTrack[] } | null;
+
+const fetchPlayerViaInnerTube = async (videoId: string, lang: string): Promise<{ data: any } | null> => {
   try {
-    const playerRes = await fetch(INNERTUBE_PLAYER_URL, {
+    const res = await fetch(INNERTUBE_PLAYER_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", "User-Agent": IOS_UA },
       body: JSON.stringify({
@@ -127,38 +142,138 @@ export const fetchYouTubeTranscript = async (
       }),
       signal: AbortSignal.timeout(15000),
     });
-    if (!playerRes.ok) return null;
-    const player = (await playerRes.json()) as any;
-    const status = player?.playabilityStatus?.status;
-    if (status === "ERROR" || status === "LOGIN_REQUIRED" || status === "UNPLAYABLE") return null;
-    const title =
-      typeof player?.videoDetails?.title === "string" && player.videoDetails.title
-        ? player.videoDetails.title.slice(0, 200)
-        : videoId;
-    const tracks: CaptionTrack[] = player?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
-    if (!Array.isArray(tracks) || tracks.length === 0) return null;
-    const track = pickCaptionTrack(tracks, lang);
-    if (!track?.baseUrl) return null;
+    if (!res.ok) return null;
+    return { data: await res.json() };
+  } catch {
+    return null;
+  }
+};
+
+// Fallback when the player endpoint is throttled/blocked for datacenter
+// IPs: the watch page embeds the same caption track list. Balanced-bracket
+// scan extracts the captionTracks array without a full JSON parse.
+const fetchPlayerViaWatchPage = async (videoId: string): Promise<PlayerData> => {
+  try {
+    const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        "User-Agent": UA,
+        "Accept-Language": "en-US,en;q=0.9",
+        Cookie: "CONSENT=YES+1",
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    if (!html) return null;
+    const keyIdx = html.indexOf('"captionTracks":');
+    if (keyIdx === -1) return null;
+    const start = html.indexOf("[", keyIdx);
+    if (start === -1) return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < html.length && i < start + 200000; i++) {
+      const c = html[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') inString = true;
+      else if (c === "[") depth++;
+      else if (c === "]") {
+        depth--;
+        if (depth === 0) {
+          try {
+            const tracks = JSON.parse(html.slice(start, i + 1));
+            if (!Array.isArray(tracks) || tracks.length === 0) return null;
+            const titleMatch =
+              html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
+            return {
+              title: titleMatch ? titleMatch[1].slice(0, 200) : videoId,
+              tracks,
+            };
+          } catch {
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+const playerDataToTracks = (player: any): { title: string; tracks: CaptionTrack[] } => ({
+  title:
+    typeof player?.videoDetails?.title === "string" && player.videoDetails.title
+      ? player.videoDetails.title.slice(0, 200)
+      : "",
+  tracks: player?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [],
+});
+
+export const fetchYouTubeTranscriptDetailed = async (
+  videoId: string,
+  lang = "en"
+): Promise<TranscriptFetchResult> => {
+  const inner = await fetchPlayerViaInnerTube(videoId, lang);
+  let title = "";
+  let tracks: CaptionTrack[] = [];
+  if (inner) {
+    const status = inner.data?.playabilityStatus?.status;
+    if (status === "LOGIN_REQUIRED" || status === "UNPLAYABLE" || status === "ERROR") {
+      return { ok: false, reason: "unplayable" };
+    }
+    const parsed = playerDataToTracks(inner.data);
+    title = parsed.title;
+    tracks = Array.isArray(parsed.tracks) ? parsed.tracks : [];
+  }
+  if (tracks.length === 0) {
+    // InnerTube throttled/empty for this network — try the watch page once.
+    const viaWatch = await fetchPlayerViaWatchPage(videoId);
+    if (viaWatch) {
+      title = viaWatch.title;
+      tracks = viaWatch.tracks;
+    }
+  }
+  if (inner === null && tracks.length === 0) return { ok: false, reason: "unreachable" };
+  if (tracks.length === 0) return { ok: false, reason: "no-captions" };
+  const track = pickCaptionTrack(tracks, lang);
+  if (!track?.baseUrl) return { ok: false, reason: "no-captions" };
+  try {
     const capRes = await fetch(track.baseUrl, {
       headers: { "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9" },
       signal: AbortSignal.timeout(15000),
     });
-    if (!capRes.ok) return null;
+    if (!capRes.ok) return { ok: false, reason: "unreachable" };
     const xml = await capRes.text();
-    if (!xml) return null;
+    if (!xml) return { ok: false, reason: "unreachable" };
     const lines = parseTranscriptXml(xml);
-    if (lines.length === 0) return null;
+    if (lines.length === 0) return { ok: false, reason: "no-captions" };
     const text = lines
       .map((l) => l.text)
       .join(" ")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, MAX_TRANSCRIPT_CHARS);
-    if (!text) return null;
-    return { videoId, title, language: track.languageCode, lines, text };
+    if (!text) return { ok: false, reason: "no-captions" };
+    return {
+      ok: true,
+      transcript: { videoId, title: title || videoId, language: track.languageCode, lines, text },
+    };
   } catch {
-    return null;
+    return { ok: false, reason: "unreachable" };
   }
+};
+
+export const fetchYouTubeTranscript = async (
+  videoId: string,
+  lang = "en"
+): Promise<VideoTranscript | null> => {
+  const r = await fetchYouTubeTranscriptDetailed(videoId, lang);
+  return r.ok ? r.transcript : null;
 };
 
 export type VideoTranscriptResult = {
@@ -167,15 +282,37 @@ export type VideoTranscriptResult = {
   lines: number;
 };
 
+export type TranscriptUnavailable = {
+  unavailable: TranscriptFailureReason;
+  url: string;
+};
+
+// System instruction when a transcribe ask cannot be fulfilled — names the
+// exact cause so the model never falls back to a generic "I can't browse"
+// refusal.
+export const transcriptUnavailableNote = (reason: TranscriptFailureReason, url: string): string => {
+  if (reason === "unreachable") {
+    return `The user asked to transcribe this YouTube video (${url}), but YouTube could not be reached from the server just now (network or rate limit). Tell them in one or two sentences to retry in a bit. Do not claim broader inability to browse or process content.`;
+  }
+  if (reason === "unplayable") {
+    return `The user asked to transcribe this YouTube video (${url}), but the video is unavailable, private, or login-restricted. Tell them plainly in one or two sentences. Do not claim broader inability to browse or process content.`;
+  }
+  return `The user asked to transcribe this YouTube video (${url}), but no captions or subtitles could be retrieved for it. Tell them in one or two sentences that this video has no available captions so you cannot transcribe it. Do not claim broader inability to browse or process content.`;
+};
+
 // "Transcribe this video <link>" → the exact transcript as answer context.
 // Same shape as page fetch so gates treat it identically (sources included).
-export const fetchVideoTranscriptFor = async (text: string): Promise<VideoTranscriptResult | null> => {
+// Intent without retrievable captions yields { unavailable } with the reason.
+export const fetchVideoTranscriptFor = async (
+  text: string
+): Promise<VideoTranscriptResult | TranscriptUnavailable | null> => {
   if (!wantsTranscript(text)) return null;
   const videoId = extractYouTubeVideoId(text);
   if (!videoId) return null;
-  const tr = await fetchYouTubeTranscript(videoId);
-  if (!tr) return null;
   const url = `https://www.youtube.com/watch?v=${videoId}`;
+  const r = await fetchYouTubeTranscriptDetailed(videoId);
+  if (!r.ok) return { unavailable: r.reason, url };
+  const tr = r.transcript;
   const block =
     `The user shared this video and asked for its transcript. Below is the exact spoken text ` +
     `("${tr.title}"). When asked to transcribe, reproduce it faithfully and completely; ` +

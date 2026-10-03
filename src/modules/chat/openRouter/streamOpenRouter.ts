@@ -9,7 +9,7 @@ import { RESEARCH_SYSTEM_PROMPT, WEB_SEARCH_SYSTEM_PROMPT } from "../chatPrompts
 import { redactForLog, type OpenRouterMessage } from "../chatMappers";
 import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../../lib/websearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../../lib/pageContent";
-import { extractYouTubeVideoId, fetchVideoTranscriptFor, wantsTranscript } from "../../../lib/youtubeTranscript";
+import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../../lib/youtubeTranscript";
 import { fetchLinkedPages } from "../../../lib/pageContent";
 import { resolveSearchProvider, searchProviderLabel } from "../../../lib/searchSettings";
 
@@ -130,7 +130,7 @@ export const streamOpenRouterCompletion = async (
   const ytWanted = ytId !== null && wantsTranscript(rawQuery);
   if (ytWanted) sendEvent("stage", { text: "Getting transcript…" });
   const yt = await fetchVideoTranscriptFor(rawQuery).catch(() => null);
-  if (yt) {
+  if (yt && "block" in yt) {
     sendEvent("stage", { text: `Reading transcript (${yt.lines} lines)…` });
     for (const s of yt.sources) {
       if (!sourceMap.has(s.url)) sourceMap.set(s.url, { url: s.url, title: s.title });
@@ -182,14 +182,21 @@ export const streamOpenRouterCompletion = async (
     }
   }
   }
-  // Transcribe was asked but no captions exist: say exactly that instead of
+  // Transcribe was asked but the captions were not retrievable: name the
+  // exact cause (no captions vs unreachable vs unplayable) instead of
   // letting the model fall back to a generic "I can't browse" refusal.
-  if (!yt && ytWanted && searchMessages === messages) {
-    sendEvent("stage", { text: "No captions available…" });
+  if (yt && "unavailable" in yt && searchMessages === messages) {
+    const stageText =
+      yt.unavailable === "unreachable"
+        ? "YouTube unreachable…"
+        : yt.unavailable === "unplayable"
+          ? "Video unavailable…"
+          : "No captions available…";
+    sendEvent("stage", { text: stageText });
     searchMessages = [
       {
         role: "system",
-        content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\nThe user asked to transcribe this YouTube video (https://www.youtube.com/watch?v=${ytId}), but no captions or subtitles could be retrieved for it. Tell them in one or two sentences that this video has no available captions so you cannot transcribe it. Do not claim broader inability to browse or process content.`,
+        content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${transcriptUnavailableNote(yt.unavailable, yt.url)}`,
       },
       ...messages,
     ];

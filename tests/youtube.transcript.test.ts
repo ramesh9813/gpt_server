@@ -3,9 +3,11 @@
 import {
   extractYouTubeVideoId,
   fetchVideoTranscriptFor,
+  fetchYouTubeTranscriptDetailed,
   fetchYouTubeTranscript,
   parseTranscriptXml,
   pickCaptionTrack,
+  transcriptUnavailableNote,
   wantsTranscript,
 } from "../src/lib/youtubeTranscript";
 
@@ -34,10 +36,21 @@ describe("wantsTranscript", () => {
   ])("triggers on %p", (t) => expect(wantsTranscript(t)).toBe(true));
 
   it.each([
-    "watch this https://youtu.be/dQw4w9WgXcQ",
     "transcribe this meeting",
     "search the web",
   ])("stays off for %p", (t) => expect(wantsTranscript(t)).toBe(false));
+
+  it("triggers on short generic asks and detail words with a link", () => {
+    expect(wantsTranscript("Get thia one https://youtu.be/dQw4w9WgXcQ")).toBe(true);
+    expect(wantsTranscript("watch this https://youtu.be/dQw4w9WgXcQ")).toBe(true);
+    expect(wantsTranscript("detail this video https://youtu.be/dQw4w9WgXcQ")).toBe(true);
+    expect(wantsTranscript("https://youtu.be/dQw4w9WgXcQ")).toBe(false);
+    expect(
+      wantsTranscript(
+        "I watched this very long video essay about history and philosophy and I have a really complicated multi part question about what the author argued regarding several topics https://youtu.be/dQw4w9WgXcQ"
+      )
+    ).toBe(false);
+  });
 });
 
 describe("parseTranscriptXml", () => {
@@ -116,6 +129,61 @@ describe("fetchYouTubeTranscript", () => {
   });
 });
 
+describe("fetchYouTubeTranscriptDetailed", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it("reports unplayable videos", async () => {
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ playabilityStatus: { status: "LOGIN_REQUIRED" } }),
+    });
+    await expect(fetchYouTubeTranscriptDetailed("dQw4w9WgXcQ")).resolves.toEqual({
+      ok: false,
+      reason: "unplayable",
+    });
+  });
+
+  it("reports unreachable when the network fails everywhere", async () => {
+    (global as any).fetch = jest.fn().mockRejectedValue(new Error("blocked"));
+    await expect(fetchYouTubeTranscriptDetailed("dQw4w9WgXcQ")).resolves.toEqual({
+      ok: false,
+      reason: "unreachable",
+    });
+  });
+
+  it("falls back to the watch page when InnerTube has no tracks", async () => {
+    (global as any).fetch = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ videoDetails: { title: "T" } }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () =>
+          `<html><head><meta property="og:title" content="Watch Title"></head><body>"captionTracks":[{"baseUrl":"https://caps.example/w","languageCode":"en"}]</body></html>`,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => `<transcript><text start="0" dur="1">watch fallback works</text></transcript>`,
+      });
+    const r = await fetchYouTubeTranscriptDetailed("dQw4w9WgXcQ");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.transcript.title).toBe("Watch Title");
+      expect(r.transcript.text).toBe("watch fallback works");
+    }
+  });
+
+  it("reports no-captions when nothing lists tracks", async () => {
+    (global as any).fetch = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ videoDetails: { title: "T" } }) })
+      .mockResolvedValueOnce({ ok: true, text: async () => `<html><body>no tracks here</body></html>` });
+    await expect(fetchYouTubeTranscriptDetailed("dQw4w9WgXcQ")).resolves.toEqual({
+      ok: false,
+      reason: "no-captions",
+    });
+  });
+});
+
 describe("fetchVideoTranscriptFor", () => {
   afterEach(() => jest.restoreAllMocks());
 
@@ -138,12 +206,48 @@ describe("fetchVideoTranscriptFor", () => {
         text: async () => `<transcript><text start="0" dur="1">hello video</text></transcript>`,
       });
     const out = await fetchVideoTranscriptFor("transcribe https://youtu.be/dQw4w9WgXcQ");
-    expect(out?.sources).toEqual([{ title: "V", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }]);
-    expect(out?.block).toContain("hello video");
-    expect(out?.lines).toBe(1);
+    expect(out && "sources" in out && out.sources).toEqual([{ title: "V", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }]);
+    expect(out && "block" in out && out.block).toContain("hello video");
+    expect(out && "lines" in out && out.lines).toBe(1);
   });
 
-  it("returns null without transcribe intent", async () => {
-    await expect(fetchVideoTranscriptFor("watch https://youtu.be/dQw4w9WgXcQ")).resolves.toBeNull();
+  it("treats a bare short ask with a link as a transcript request", async () => {
+    (global as any).fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          videoDetails: { title: "V" },
+          captions: {
+            playerCaptionsTracklistRenderer: {
+              captionTracks: [{ baseUrl: "https://caps.example/t", languageCode: "en" }],
+            },
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => `<transcript><text start="0" dur="1">hello video</text></transcript>`,
+      });
+    const out = await fetchVideoTranscriptFor("get this one https://youtu.be/dQw4w9WgXcQ");
+    expect(out && "block" in out && out.block).toContain("hello video");
+  });
+
+  it("returns the reason when captions are missing", async () => {
+    (global as any).fetch = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ videoDetails: { title: "T" } }) })
+      .mockResolvedValueOnce({ ok: true, text: async () => `<html></html>` });
+    const out = await fetchVideoTranscriptFor("transcribe https://youtu.be/dQw4w9WgXcQ");
+    expect(out).toEqual({
+      unavailable: "no-captions",
+      url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    });
+  });
+
+  it("names the exact cause in the fallback note", () => {
+    expect(transcriptUnavailableNote("no-captions", "u")).toContain("no available captions");
+    expect(transcriptUnavailableNote("unreachable", "u")).toContain("retry");
+    expect(transcriptUnavailableNote("unplayable", "u")).toContain("unavailable, private");
   });
 });
