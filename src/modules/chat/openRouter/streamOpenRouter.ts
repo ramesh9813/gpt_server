@@ -7,8 +7,9 @@ import { generateFollowups, isFollowupsEnabled } from "../followups";
 import { getAvailableTools, executeMcpTool, type LlmToolDef } from "../../llm/toolBridge";
 import { RESEARCH_SYSTEM_PROMPT, WEB_SEARCH_SYSTEM_PROMPT } from "../chatPrompts";
 import { redactForLog, type OpenRouterMessage } from "../chatMappers";
-import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearchWithProvider, wantsWebSearch } from "../../../lib/websearch";
+import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../../lib/websearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../../lib/pageContent";
+import { extractYouTubeVideoId, fetchVideoTranscriptFor } from "../../../lib/youtubeTranscript";
 import { fetchLinkedPages } from "../../../lib/pageContent";
 import { resolveSearchProvider, searchProviderLabel } from "../../../lib/searchSettings";
 
@@ -122,11 +123,29 @@ export const streamOpenRouterCompletion = async (
       : Array.isArray(lastUser?.content)
         ? (lastUser.content as any[]).filter((p) => p?.type === "text").map((p) => p.text).join("\n")
         : "";
+  // YouTube link + transcribe ask: fetch the captions and answer from the
+  // exact spoken text. Then pasted page links, then web search (never on
+  // research turns). Stage events narrate the wait above the typing dots.
+  const ytId = extractYouTubeVideoId(rawQuery);
+  if (ytId) sendEvent("stage", { text: "Getting transcript…" });
+  const yt = await fetchVideoTranscriptFor(rawQuery).catch(() => null);
+  if (yt) {
+    sendEvent("stage", { text: `Reading transcript (${yt.lines} lines)…` });
+    for (const s of yt.sources) {
+      if (!sourceMap.has(s.url)) sourceMap.set(s.url, { url: s.url, title: s.title });
+    }
+    searchMessages = [
+      { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${yt.block}` },
+      ...messages,
+    ];
+  } else {
   const pageUrls = extractPageUrls(rawQuery);
   if (pageUrls.length > 0) sendEvent("stage", { text: `Opening ${pageHost(pageUrls[0])}…` });
   const linked = await fetchLinkedPages(rawQuery).catch(() => null);
   if (linked) {
-    sendEvent("stage", { text: `Reading ${linked.sources[0]?.title ?? "page"}…` });
+    linked.sources.forEach((s, i) =>
+      sendEvent("stage", { text: stageLineForSource(i, linked.sources.length, s.title, s.url) })
+    );
     for (const h of linked.sources) {
       if (!sourceMap.has(h.url)) sourceMap.set(h.url, { url: h.url, title: h.title });
     }
@@ -143,7 +162,9 @@ export const streamOpenRouterCompletion = async (
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
         const { hits } = await performWebSearchWithProvider(query, 5, searchProvider);
-        if (hits.length > 0) sendEvent("stage", { text: `Reading ${hits.length} source${hits.length === 1 ? "" : "s"}…` });
+        hits.forEach((h, i) =>
+          sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url) })
+        );
         for (const h of hits) {
           if (!sourceMap.has(h.url)) sourceMap.set(h.url, { url: h.url, title: h.title });
         }
@@ -158,6 +179,7 @@ export const streamOpenRouterCompletion = async (
         logger.warn({ err }, "Universal web search failed, continuing without results");
       }
     }
+  }
   }
 
   const runTurn = async (turnMessages: OpenRouterMessage[]): Promise<{ usage: any; toolCalls: PendingToolCall[]; terminal: boolean }> => {

@@ -361,6 +361,19 @@ export const buildSearchContextBlock = (query: string, results: WebResult[]): st
   );
 };
 
+// One scrolling line per source: "2/5 kathmandupost.com — Title…".
+// The client keeps the last 3 stage lines, so sources auto-scroll past one
+// after another as they arrive instead of a single "Reading N sources" line.
+export const stageLineForSource = (index: number, total: number, title: string, url: string): string => {
+  let host = url;
+  try {
+    host = new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    // keep raw url
+  }
+  const t = (title || "").trim().slice(0, 48);
+  return `${index + 1}/${total} ${host}${t ? ` — ${t}` : ""}…`;
+};
 // Footer guarantees the searched-page URLs sit at the bottom of the bubble
 // even when the model omits them — client Sources panel + persisted row use
 // the same list via the `sources` SSE event.
