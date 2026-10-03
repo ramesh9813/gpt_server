@@ -7,7 +7,7 @@ import { generateFollowups, isFollowupsEnabled } from "../followups";
 import { getAvailableTools, executeMcpTool, type LlmToolDef } from "../../llm/toolBridge";
 import { RESEARCH_SYSTEM_PROMPT, WEB_SEARCH_SYSTEM_PROMPT } from "../chatPrompts";
 import { redactForLog, type OpenRouterMessage } from "../chatMappers";
-import { appendSourcesFooter, buildSearchContextBlock, performWebSearch } from "../../../lib/websearch";
+import { appendSourcesFooter, buildSearchContextBlock, performWebSearch, wantsWebSearch } from "../../../lib/websearch";
 
 type PendingToolCall = { id: string; name: string; arguments: string };
 
@@ -104,19 +104,20 @@ export const streamOpenRouterCompletion = async (
 
   logger.info({ messages: redactForLog(messages) }, "Sending messages to OpenRouter");
 
-  // Universal search: server-side DuckDuckGo runs for EVERY model (no API
-  // key, no provider-native tool needed). Results are injected into the
+  // Universal search: server-side runs for EVERY model (no API
+  // key, no provider-native tool needed). Toggle OR automatic on
+  // search/news/recency intent. Results are injected into the
   // prompt AND pre-seeded into sourceMap so URLs land at the bottom even
   // when the model emits no url_citation annotations.
   let searchMessages = messages;
-  if (webSearch === true && research !== true) {
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    const rawQuery =
-      typeof lastUser?.content === "string"
-        ? lastUser.content
-        : Array.isArray(lastUser?.content)
-          ? (lastUser.content as any[]).filter((p) => p?.type === "text").map((p) => p.text).join("\n")
-          : "";
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  const rawQuery =
+    typeof lastUser?.content === "string"
+      ? lastUser.content
+      : Array.isArray(lastUser?.content)
+        ? (lastUser.content as any[]).filter((p) => p?.type === "text").map((p) => p.text).join("\n")
+        : "";
+  if ((webSearch === true || wantsWebSearch(rawQuery)) && research !== true) {
     const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
     if (query) {
       try {

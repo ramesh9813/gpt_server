@@ -12,7 +12,7 @@ import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisio
 import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
-import { buildSearchContextBlock, performWebSearch } from "../../lib/websearch";
+import { buildSearchContextBlock, performWebSearch, wantsWebSearch } from "../../lib/websearch";
 
 // ---- entry point ------------------------------------------------------------
 
@@ -69,19 +69,20 @@ export const streamByokCompletion = async (
   let assistantReasoning = "";
   let lastPersistedLength = 0;
   let lastPersistedAt = Date.now();
-  // Universal search: same server-side DuckDuckGo injection as the built-in
-  // path, so EVERY provider (OpenAI-compat, Gemini, Anthropic, custom) gets
-  // live results + bottom URL list. No native tool required.
+  // Universal search: same server-side injection as the built-in path, so
+  // EVERY provider (OpenAI-compat, Gemini, Anthropic, custom) gets live
+  // results + bottom URL list. No native tool required. Runs on the toggle
+  // OR automatically when the prompt carries a search/news/recency intent.
   let searchMessages = messages;
   const sourceMap = new Map<string, { title: string; url: string }>();
-  if (webSearch === true) {
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    const rawQuery =
-      typeof lastUser?.content === "string"
-        ? lastUser.content
-        : Array.isArray(lastUser?.content)
-          ? (lastUser.content as any[]).filter((p) => p?.type === "text").map((p) => p.text).join("\n")
-          : "";
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  const rawQuery =
+    typeof lastUser?.content === "string"
+      ? lastUser.content
+      : Array.isArray(lastUser?.content)
+        ? (lastUser.content as any[]).filter((p) => p?.type === "text").map((p) => p.text).join("\n")
+        : "";
+  if (webSearch === true || wantsWebSearch(rawQuery)) {
     const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
     if (query) {
       try {

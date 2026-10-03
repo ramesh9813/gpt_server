@@ -1,8 +1,11 @@
-// Universal web search — no API key required (DuckDuckGo).
+// Universal web search — Brave AI grounding when BRAVE_API_KEY is set,
+// otherwise the keyless DuckDuckGo chain.
 // Runs server-side so EVERY model/provider (OpenRouter built-in + all BYOK
 // custom endpoints, Gemini, Anthropic, OpenAI-compat) gets live results.
 // Results are injected into the prompt AND returned as {title,url} sources so
 // the client can render the URL list at the bottom of the response.
+
+import { env } from "./config";
 
 export type WebResult = { title: string; url: string; snippet: string };
 
@@ -86,9 +89,79 @@ const ddgInstantAnswer = async (query: string): Promise<WebResult[]> => {
   }
 };
 
+// Auto-decide: the model doesn't choose — prompts carrying an explicit
+// search/news/recency intent trigger a lookup automatically, so "search ...",
+// "today's news", "current price of ..." just work without the toggle.
+const SEARCH_INTENT_RE =
+  /\b(search(\s+(for|the|about|up))?|google|bing|duckduckgo|look\s*up|look it up|find\s+out|news|latest|recent(ly)?|today'?s?\s+(news|update|score|scores|price|prices|weather)|this\s+(week|month|year)|price|prices|cost|weather|score|scores|standings|stock|stocks|election|release\s+date|who\s+won|what\s+happened|update\s+me|trending)\b/i;
+const CURRENT_PHRASE_RE =
+  /\bcurrent\s+(news|events?|affairs|price|prices|status|year|date|score|weather|value)\b/i;
+const RECENCY_QUESTION_RE =
+  /\b(what|who|which|when|where)\b[^.?!]{0,80}\b(latest|newest|current|this\s+week|this\s+year|202[4-9]|20[3-9]\d)\b/i;
+
+export const wantsWebSearch = (text: string): boolean => {
+  const t = (text || "").slice(0, 1000);
+  if (!t.trim()) return false;
+  return SEARCH_INTENT_RE.test(t) || CURRENT_PHRASE_RE.test(t) || RECENCY_QUESTION_RE.test(t);
+};
+
+// Brave AI grounding (llm/context): pre-extracted page content optimized
+// for RAG, keyed by the X-Subscription-Token header. Lean budgets — this
+// lands inside the model prompt, so ~3k tokens / 5 URLs max.
+const performBraveSearch = async (query: string, max: number): Promise<WebResult[]> => {
+  const key = env.BRAVE_API_KEY?.trim();
+  if (!key) return [];
+  try {
+    const params = new URLSearchParams({
+      q: query,
+      count: "10",
+      maximum_number_of_urls: String(Math.min(Math.max(max, 1), 10)),
+      maximum_number_of_tokens: "3000",
+      maximum_number_of_snippets: "30",
+      safesearch: "moderate",
+      spellcheck: "true",
+    });
+    const res = await fetch(`https://api.search.brave.com/res/v1/llm/context?${params.toString()}`, {
+      headers: {
+        Accept: "application/json",
+        "X-Subscription-Token": key,
+        "User-Agent": UA,
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return [];
+    const j = (await res.json()) as any;
+    const items: any[] = Array.isArray(j?.grounding?.generic) ? j.grounding.generic : [];
+    const out: WebResult[] = [];
+    for (const g of items) {
+      const url = typeof g?.url === "string" ? g.url : "";
+      if (!/^https?:\/\//i.test(url)) continue;
+      if (out.some((r) => r.url === url)) continue;
+      const snippets: string[] = Array.isArray(g?.snippets)
+        ? g.snippets.filter((s: unknown): s is string => typeof s === "string" && s.trim().length > 0)
+        : [];
+      out.push({
+        title: String(g?.title || url).slice(0, 200),
+        url,
+        snippet: snippets.join(" ").slice(0, 600),
+      });
+      if (out.length >= max) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+};
+
 export const performWebSearch = async (query: string, max = 5): Promise<WebResult[]> => {
   const q = query.trim().slice(0, 500);
   if (!q) return [];
+  // 0) Brave AI grounding when a key is configured — best content.
+  if (env.BRAVE_API_KEY?.trim()) {
+    const brave = await performBraveSearch(q, max);
+    if (brave.length > 0) return brave;
+    // fall through to the keyless chain on failure/empty
+  }
   // 1) HTML results (real web links) — primary.
   try {
     const res = await fetch("https://html.duckduckgo.com/html/", {

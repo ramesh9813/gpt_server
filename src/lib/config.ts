@@ -64,6 +64,10 @@ const envSchema = z.object({
   OPENROUTER_MODEL_DEFAULT: z.string().default("openai/gpt-4o-mini"),
   OPENROUTER_MODEL_DEFAULT_FREE: z.string().optional(),
   APP_ORIGIN: z.string().default("http://localhost:5173"),
+  // Brave Search API (AI grounding): when set, live web results come from
+  // Brave's llm/context endpoint; otherwise the keyless DuckDuckGo chain is
+  // used. Render env var name: BRAVE_API_KEY.
+  BRAVE_API_KEY: z.string().default(""),
   RUNNER_PROVIDER: z.enum(["piston", "wandbox"]).default("wandbox"),
   RUNNER_BASE_URL: httpsUrl("https://emkc.org/api/v2/piston"),
   WANDBOX_BASE_URL: httpsUrl("https://wandbox.org"),
