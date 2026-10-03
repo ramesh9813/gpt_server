@@ -14,7 +14,7 @@ import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
 import { buildSearchContextBlock, ensureSingleSourcesSection, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../lib/websearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
-import { extractYouTubeVideoId, fetchVideoTranscriptFor } from "../../lib/youtubeTranscript";
+import { extractYouTubeVideoId, fetchVideoTranscriptFor, wantsTranscript } from "../../lib/youtubeTranscript";
 import { resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
 
 // ---- entry point ------------------------------------------------------------
@@ -89,7 +89,8 @@ export const streamByokCompletion = async (
   // exact spoken text. Then pasted page links, then web search.
   // Stage events narrate the wait above the typing dots (short lines).
   const ytId = extractYouTubeVideoId(rawQuery);
-  if (ytId) sendEvent("stage", { text: "Getting transcript…" });
+  const ytWanted = ytId !== null && wantsTranscript(rawQuery);
+  if (ytWanted) sendEvent("stage", { text: "Getting transcript…" });
   const yt = await fetchVideoTranscriptFor(rawQuery).catch(() => null);
   if (yt) {
     sendEvent("stage", { text: `Reading transcript (${yt.lines} lines)…` });
@@ -142,6 +143,18 @@ export const streamByokCompletion = async (
       }
     }
   }
+  }
+  // Transcribe was asked but no captions exist: say exactly that instead of
+  // letting the model fall back to a generic "I can't browse" refusal.
+  if (!yt && ytWanted && searchMessages === messages) {
+    sendEvent("stage", { text: "No captions available…" });
+    searchMessages = [
+      {
+        role: "system",
+        content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\nThe user asked to transcribe this YouTube video (https://www.youtube.com/watch?v=${ytId}), but no captions or subtitles could be retrieved for it. Tell them in one or two sentences that this video has no available captions so you cannot transcribe it. Do not claim broader inability to browse or process content.`,
+      },
+      ...messages,
+    ];
   }
 
   const persistProgress = async () => {
