@@ -12,7 +12,8 @@ const createSchema = z.object({
 });
 
 const updateSchema = z.object({
-  name: z.string().min(1).max(50).optional()
+  name: z.string().min(1).max(50).optional(),
+  pinned: z.boolean().optional()
 });
 
 router.get("/", requireAuth, async (req, res) => {
@@ -25,7 +26,7 @@ router.get("/", requireAuth, async (req, res) => {
         select: { conversations: { where: { deletedAt: null } } }
       }
     },
-    orderBy: { createdAt: "desc" }
+    orderBy: [{ pinned: "desc" }, { createdAt: "desc" }]
   });
 
   return res.json({
@@ -67,7 +68,8 @@ router.patch("/:id", requireAuth, validateBody(updateSchema), async (req, res) =
   const updated = await prisma.folder.update({
     where: { id: folder.id },
     data: {
-      name: req.body.name ?? folder.name
+      name: req.body.name ?? folder.name,
+      pinned: req.body.pinned ?? folder.pinned
     }
   });
 

@@ -66,6 +66,7 @@ model Folder {
   customPrompt        String?   @db.Text @map("custom_prompt")
   customPromptEnabled Boolean   @default(true) @map("custom_prompt_enabled")
   customPrompts       Json?     @map("custom_prompts")
+  pinned              Boolean   @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
