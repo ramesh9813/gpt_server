@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
-import { sanitizeTuningPrompt, TUNING_MAX_LENGTH } from "../../lib/tuning";
+import { legacyMirrorOf, normalizePromptList, promptsFromRow, type TuningPromptItem } from "../../lib/tuning";
 
 const router = Router();
 
@@ -78,28 +78,47 @@ router.patch("/:id", requireAuth, validateBody(updateSchema), async (req, res) =
   });
 });
 
+const tuningItemSchema = z.object({
+  id: z.string().max(64).optional(),
+  text: z.string().max(2000),
+  enabled: z.boolean().optional(),
+});
+
 const tuningSchema = z.object({
   customPrompt: z.string().max(2000).nullable().optional(),
   customPromptEnabled: z.boolean().optional(),
+  customPrompts: z.array(tuningItemSchema).max(20).optional(),
 });
 
-// Folder-level custom prompt: inherited at read time by every chat inside
+const toFolderTuningResponse = (row: { id: string } & Record<string, unknown>) => {
+  const customPrompts = promptsFromRow(row);
+  const mirror = legacyMirrorOf(customPrompts);
+  return {
+    id: row.id,
+    customPrompts,
+    customPrompt: mirror.customPrompt,
+    customPromptEnabled: mirror.customPromptEnabled,
+  };
+};
+
+// Folder-level custom prompts: inherited at read time by every chat inside
 // the folder (no duplication — edits apply to all chats instantly).
 router.get("/:id/tuning", requireAuth, async (req, res) => {
   const folder = await prisma.folder.findFirst({
     where: { id: req.params.id, userId: req.user!.id },
-    select: { id: true, customPrompt: true, customPromptEnabled: true },
+    select: { id: true, customPrompt: true, customPromptEnabled: true, customPrompts: true },
   });
   if (!folder) {
     return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Folder not found" } });
   }
-  return res.json({ success: true, data: { tuning: folder } });
+  return res.json({ success: true, data: { tuning: toFolderTuningResponse(folder) } });
 });
 
 router.patch("/:id/tuning", requireAuth, validateBody(tuningSchema), async (req, res) => {
-  const { customPrompt, customPromptEnabled } = req.body as {
+  const { customPrompt, customPromptEnabled, customPrompts } = req.body as {
     customPrompt?: string | null;
     customPromptEnabled?: boolean;
+    customPrompts?: Array<{ id?: string; text: string; enabled?: boolean }>;
   };
   const folder = await prisma.folder.findFirst({
     where: { id: req.params.id, userId: req.user!.id },
@@ -107,23 +126,29 @@ router.patch("/:id/tuning", requireAuth, validateBody(tuningSchema), async (req,
   if (!folder) {
     return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Folder not found" } });
   }
-  const nextPromptRaw = customPrompt !== undefined ? customPrompt : (folder as unknown as { customPrompt?: string | null }).customPrompt ?? null;
-  const nextEnabled = customPromptEnabled !== undefined ? customPromptEnabled : (folder as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? true;
-  const sanitized = nextPromptRaw == null ? null : sanitizeTuningPrompt(nextPromptRaw);
-  // Empty prompt cannot stay enabled
-  const enabledFinal = !sanitized ? false : nextEnabled;
-  if (sanitized !== null && sanitized.length > TUNING_MAX_LENGTH) {
-    return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", message: `custom_prompt exceeds ${TUNING_MAX_LENGTH} characters` } });
+  let items: TuningPromptItem[];
+  if (customPrompts !== undefined) {
+    items = normalizePromptList(customPrompts);
+  } else {
+    const f = folder as unknown as { customPrompts?: unknown; customPrompt?: string | null; customPromptEnabled?: boolean };
+    items = normalizePromptList(f.customPrompts, customPrompt !== undefined ? customPrompt : f.customPrompt, customPromptEnabled !== undefined ? customPromptEnabled : f.customPromptEnabled);
+    if (customPrompt !== undefined || customPromptEnabled !== undefined) {
+      const keepId = items[0]?.id ?? "";
+      const single = normalizePromptList(null, customPrompt !== undefined ? customPrompt : f.customPrompt, customPromptEnabled !== undefined ? customPromptEnabled : f.customPromptEnabled);
+      items = single.map((s) => ({ ...s, id: keepId || s.id }));
+    }
   }
+  const mirror = legacyMirrorOf(items);
   const updated = await prisma.folder.update({
     where: { id: folder.id },
     data: {
-      customPrompt: sanitized,
-      customPromptEnabled: enabledFinal,
+      customPrompts: items,
+      customPrompt: mirror.customPrompt,
+      customPromptEnabled: mirror.customPromptEnabled,
     },
-    select: { id: true, customPrompt: true, customPromptEnabled: true },
+    select: { id: true, customPrompt: true, customPromptEnabled: true, customPrompts: true },
   });
-  return res.json({ success: true, data: { tuning: updated }, message: "Folder tuning updated" });
+  return res.json({ success: true, data: { tuning: toFolderTuningResponse(updated) }, message: "Folder tuning updated" });
 });
 
 router.delete("/:id", requireAuth, async (req, res) => {

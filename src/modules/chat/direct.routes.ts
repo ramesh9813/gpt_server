@@ -5,7 +5,7 @@ import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 import { parseByokHeadersAsync } from "../../lib/providers";
 import { resolveEffectiveSystemPrompt } from "./artifact";
-import { mergeSystemPrompt } from "../../lib/tuning";
+import { mergePromptLists, mutedIdsFromRow, promptsFromRow } from "../../lib/tuning";
 import { buildHistoryMessages, resolveHistoryBudget } from "./history";
 import { wantsMcq } from "./mcq";
 import { wantsImageGeneration, wantsVideo } from "./intents";
@@ -61,7 +61,7 @@ router.post(
             id: (conversation as { folderId?: string | null }).folderId as string,
             userId: req.user!.id,
           },
-          select: { customPrompt: true, customPromptEnabled: true },
+          select: { customPrompt: true, customPromptEnabled: true, customPrompts: true },
         })
       : Promise.resolve(null);
 
@@ -153,15 +153,13 @@ router.post(
       req.user!.id,
       { userMsgContent: userMsg.content, artifact }
     );
-    const tuningPrompt = (conversation as unknown as { customPrompt?: string | null }).customPrompt ?? null;
-    const tuningEnabled = (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? true;
     const folderRow = await folderTuningPromise;
-    const withFolderPrompt = mergeSystemPrompt(
+    const mergedSystemPrompt = mergePromptLists(
       effectiveSystemPrompt,
-      folderRow?.customPrompt ?? null,
-      folderRow?.customPromptEnabled ?? true
+      promptsFromRow(folderRow),
+      promptsFromRow(conversation),
+      mutedIdsFromRow(conversation)
     );
-    const mergedSystemPrompt = mergeSystemPrompt(withFolderPrompt, tuningPrompt, tuningEnabled);
     const history = await prisma.message.findMany({
       where: { conversationId },
       orderBy: { createdAt: "asc" },

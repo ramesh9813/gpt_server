@@ -7,7 +7,7 @@ import { prisma } from "../../lib/prisma";
 import type { ByokRequest } from "../../lib/byok";
 import { isFirewallChallengeBody } from "../../lib/byok";
 import { logger } from "../../lib/logger";
-import { generateByokFollowups } from "./followups";
+import { generateByokFollowups, isFollowupsEnabled } from "./followups";
 import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisionRejection, stripImageParts } from "./byokRequest";
 import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
@@ -516,8 +516,10 @@ export const streamByokCompletion = async (
       durationMs: Date.now() - startedAt,
     });
     // Best-effort follow-up questions, generated on the user's own provider
-    // (same UX as the OpenRouter path; never fails the stream).
+    // (same UX as the OpenRouter path; never fails the stream). Skipped
+    // entirely when the user turned follow-ups off in Settings.
     try {
+      if (!(await isFollowupsEnabled((req as any).user?.id))) return safeEnd();
       const followups = await generateByokFollowups(byok, assistantContent);
       if (followups.length > 0 && !res.writableEnded && !res.destroyed) {
         await prisma.message.update({

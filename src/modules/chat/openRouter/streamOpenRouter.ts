@@ -3,7 +3,7 @@ import { prisma } from "../../../lib/prisma";
 import { env } from "../../../lib/config";
 import { logger } from "../../../lib/logger";
 import { TOKEN } from "../../../lib/constants";
-import { generateFollowups } from "../followups";
+import { generateFollowups, isFollowupsEnabled } from "../followups";
 import { getAvailableTools, executeMcpTool, type LlmToolDef } from "../../llm/toolBridge";
 import { RESEARCH_SYSTEM_PROMPT, WEB_SEARCH_SYSTEM_PROMPT } from "../chatPrompts";
 import { redactForLog, type OpenRouterMessage } from "../chatMappers";
@@ -289,6 +289,7 @@ export const streamOpenRouterCompletion = async (
     if (searchNotice) sendEvent("notice", { message: searchNotice });
     sendEvent("done", { messageId: assistantMessageId, usage: usage || {}, durationMs: Date.now() - startedAt });
     try {
+      if (!(await isFollowupsEnabled((req as any).user?.id))) return safeEnd();
       const followups = await generateFollowups(selectedModel, assistantContent);
       if (followups.length > 0 && !res.writableEnded && !(res as any).destroyed) {
         await prisma.message.update({ where: { id: assistantMessageId }, data: { followups } });

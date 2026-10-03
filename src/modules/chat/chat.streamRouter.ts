@@ -1,7 +1,7 @@
 import { prisma } from "../../lib/prisma";
 import { isImageOnlyModel, isVideoOnlyModel, resolveModelForRole } from "../../lib/openrouter";
 import { resolveEffectiveSystemPrompt, wantsArtifact } from "./artifact";
-import { mergeSystemPrompt } from "../../lib/tuning";
+import { mergePromptLists, mutedIdsFromRow, promptsFromRow } from "../../lib/tuning";
 import { logger } from "../../lib/logger";
 import { getStoredFiles, getStoredImages, redactForLog, resolveUserPromptForTurn, type OpenRouterMessage } from "./chatMappers";
 import { buildHistoryMessages, fetchHistoryRows } from "./history";
@@ -25,7 +25,7 @@ export const handleStream = async (req: Request, res: Response) => {
           id: (conversation as { folderId?: string | null }).folderId as string,
           userId: (req as any).user!.id,
         },
-        select: { customPrompt: true, customPromptEnabled: true },
+        select: { customPrompt: true, customPromptEnabled: true, customPrompts: true },
       })
     : Promise.resolve(null);
 
@@ -84,15 +84,15 @@ export const handleStream = async (req: Request, res: Response) => {
     prisma.message.create({ data: { conversationId, role: "ASSISTANT", content: "", status: "STREAMING" } }),
     resolveEffectiveSystemPrompt((req as any).user!.id, { userMsgContent, artifact, systemPrompt }),
   ]);
-  const tuningPrompt = (conversation as unknown as { customPrompt?: string | null }).customPrompt ?? null;
-  const tuningEnabled = (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? true;
   const folderRow = await folderTuningPromise;
-  const withFolderPrompt = mergeSystemPrompt(
+  // Todo-list tuning: folder prompts first (minus this chat's mutes), then
+  // the chat's own prompts. Legacy single-prompt rows read as one item.
+  const mergedSystemPrompt = mergePromptLists(
     effectiveSystemPrompt,
-    folderRow?.customPrompt ?? null,
-    folderRow?.customPromptEnabled ?? true
+    promptsFromRow(folderRow),
+    promptsFromRow(conversation),
+    mutedIdsFromRow(conversation)
   );
-  const mergedSystemPrompt = mergeSystemPrompt(withFolderPrompt, tuningPrompt, tuningEnabled);
 
   const wantsMcqFor = (content: string) => wantsMcq(content);
   const handleMcq = async (topicRaw: string, byokArg?: any) => {

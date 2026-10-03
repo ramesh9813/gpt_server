@@ -1,7 +1,21 @@
 // Follow-up question generation — split from chat.service.ts. No logic changes.
 import { env } from "../../lib/config";
+import { prisma } from "../../lib/prisma";
 import type { ByokRequest } from "../../lib/byok";
 import { callByokText } from "./byokCall";
+
+// Settings toggle (default ON): when the user turns follow-ups off, streams
+// skip generation entirely — no extra provider call, nothing persisted, and
+// the client hides any stored ones. Missing row / DB error means ON.
+export const isFollowupsEnabled = async (userId: string): Promise<boolean> => {
+  if (!userId) return true;
+  try {
+    const row = await prisma.userSettings.findUnique({ where: { userId } });
+    return (row as { showFollowups?: unknown } | null)?.showFollowups !== false;
+  } catch {
+    return true;
+  }
+};
 
 const cleanQuestion = (v: string): string => {
   const bullets = String.raw`[-*\d.\s:;)\]]`;

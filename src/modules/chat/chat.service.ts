@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { env } from "../../lib/config";
-import { generateFollowups } from "./followups";
+import { generateFollowups, isFollowupsEnabled } from "./followups";
 import {
   getAvailableTools,
   executeMcpTool,
@@ -519,8 +519,10 @@ export const streamOpenRouterCompletion = async (
       sendEvent("notice", { message: searchNotice });
     }
     sendEvent("done", { messageId: assistantMessageId, usage: usage || {}, durationMs: Date.now() - startedAt });
-    // Best-effort follow-up questions (never fails the stream).
+    // Best-effort follow-up questions (never fails the stream). Skipped
+    // entirely when the user turned follow-ups off in Settings.
     try {
+      if (!(await isFollowupsEnabled((req as any).user?.id))) return safeEnd();
       const followups = await generateFollowups(selectedModel, assistantContent);
       if (followups.length > 0 && !res.writableEnded && !res.destroyed) {
         await prisma.message.update({

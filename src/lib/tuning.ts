@@ -63,3 +63,100 @@ export const tuningPromptFromRow = (row: unknown): string | null => {
   if (v == null) return null;
   return String(v);
 };
+
+// ---- prompt lists (todo-list tuning) ----------------------------------------
+// A chat or folder holds up to MAX_PROMPTS single-line prompts, each with its
+// own on/off switch. Old single-prompt rows (customPrompt/customPromptEnabled
+// columns) migrate on read into a one-item list, so nothing saved before is
+// lost and old clients keep working through the legacy mirror columns.
+
+export const MAX_PROMPTS = 20;
+
+export type TuningPromptItem = {
+  id: string;
+  text: string;
+  enabled: boolean;
+};
+
+export const makePromptId = (): string =>
+  `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+
+const coerceItem = (raw: unknown): TuningPromptItem | null => {
+  if (!raw || typeof raw !== "object") {
+    if (typeof raw === "string" && raw.trim()) {
+      return { id: makePromptId(), text: sanitizeTuningPrompt(raw), enabled: true };
+    }
+    return null;
+  }
+  const r = raw as { id?: unknown; text?: unknown; prompt?: unknown; enabled?: unknown };
+  const text = sanitizeTuningPrompt(typeof r.text === "string" ? r.text : typeof r.prompt === "string" ? r.prompt : "");
+  if (!text) return null;
+  return {
+    id: typeof r.id === "string" && r.id.trim() ? r.id.trim().slice(0, 64) : makePromptId(),
+    text,
+    enabled: r.enabled !== false,
+  };
+};
+
+export const normalizePromptList = (
+  raw: unknown,
+  legacyPrompt?: unknown,
+  legacyEnabled?: unknown
+): TuningPromptItem[] => {
+  const items: TuningPromptItem[] = [];
+  if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      if (items.length >= MAX_PROMPTS) break;
+      const item = coerceItem(entry);
+      if (item) items.push(item);
+    }
+  }
+  if (items.length === 0) {
+    const s = sanitizeTuningPrompt(typeof legacyPrompt === "string" ? legacyPrompt : "");
+    if (s) items.push({ id: makePromptId(), text: s, enabled: legacyEnabled !== false });
+  }
+  return items;
+};
+
+export const promptsFromRow = (row: unknown): TuningPromptItem[] => {
+  const r = row as { customPrompts?: unknown; customPrompt?: unknown; customPromptEnabled?: unknown };
+  return normalizePromptList(r?.customPrompts, r?.customPrompt, r?.customPromptEnabled);
+};
+
+export const mutedIdsFromRow = (row: unknown): string[] => {
+  const v = (row as { mutedFolderPromptIds?: unknown })?.mutedFolderPromptIds;
+  if (!Array.isArray(v)) return [];
+  return v.filter((id): id is string => typeof id === "string" && id.length > 0).slice(0, MAX_PROMPTS);
+};
+
+// Enabled prompt texts of one scope, in order.
+export const activePromptTexts = (items: TuningPromptItem[]): string[] =>
+  items.filter((i) => i.enabled && i.text.trim()).map((i) => i.text.trim());
+
+// Folder prompts first (minus per-chat mutes), then the chat's own prompts.
+// Joined into one tuning block so single-prompt behavior is unchanged.
+export const mergePromptLists = (
+  base: string | undefined,
+  folderItems: TuningPromptItem[],
+  chatItems: TuningPromptItem[],
+  mutedFolderIds: string[] = []
+): string | undefined => {
+  const muted = new Set(mutedFolderIds);
+  const texts = [
+    ...folderItems.filter((i) => i.enabled && !muted.has(i.id)).map((i) => i.text.trim()),
+    ...activePromptTexts(chatItems),
+  ].filter(Boolean);
+  if (texts.length === 0) {
+    const b = (base || "").trim();
+    return b || undefined;
+  }
+  return mergeSystemPrompt(base, texts.join("\n\n"), true);
+};
+
+// Legacy mirror columns so old clients keep working: joined enabled texts +
+// "any enabled" flag (empty forces off, same rule as before).
+export const legacyMirrorOf = (items: TuningPromptItem[]): { customPrompt: string | null; customPromptEnabled: boolean } => {
+  const texts = activePromptTexts(items);
+  if (texts.length === 0) return { customPrompt: null, customPromptEnabled: false };
+  return { customPrompt: texts.join("\n\n"), customPromptEnabled: true };
+};

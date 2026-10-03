@@ -4,7 +4,7 @@ import { requireAuth } from "../../middleware/requireAuth";
 import { validateBody } from "../../middleware/validate";
 import { resolveModelForRole, isImageOnlyModel, isVideoOnlyModel } from "../../lib/openrouter";
 import { resolveEffectiveSystemPrompt, wantsArtifact } from "./artifact";
-import { mergeSystemPrompt } from "../../lib/tuning";
+import { mergePromptLists, mutedIdsFromRow, promptsFromRow } from "../../lib/tuning";
 import { logger } from "../../lib/logger";
 import {
   getStoredFiles,
@@ -78,7 +78,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
           id: (conversation as { folderId?: string | null }).folderId as string,
           userId: req.user!.id,
         },
-        select: { customPrompt: true, customPromptEnabled: true },
+        select: { customPrompt: true, customPromptEnabled: true, customPrompts: true },
       })
     : Promise.resolve(null);
 
@@ -246,17 +246,14 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     resolveEffectiveSystemPrompt(req.user!.id, { userMsgContent, artifact, systemPrompt }),
   ]);
   // Per-chat tuning: merged as a guarded system block after the base prompt.
-  const tuningPrompt = (conversation as unknown as { customPrompt?: string | null }).customPrompt ?? null;
-  const tuningEnabled = (conversation as unknown as { customPromptEnabled?: boolean }).customPromptEnabled ?? true;
-  // Folder prompt first (shared context for all chats inside), then the
-  // chat's own prompt refines it. Absent folder flag means enabled.
+  // Folder prompts first (minus this chat's mutes), then the chat's own list.
   const folderRow = await folderTuningPromise;
-  const withFolderPrompt = mergeSystemPrompt(
+  const mergedSystemPrompt = mergePromptLists(
     effectiveSystemPrompt,
-    folderRow?.customPrompt ?? null,
-    folderRow?.customPromptEnabled ?? true
+    promptsFromRow(folderRow),
+    promptsFromRow(conversation),
+    mutedIdsFromRow(conversation)
   );
-  const mergedSystemPrompt = mergeSystemPrompt(withFolderPrompt, tuningPrompt, tuningEnabled);
 
   // Prompt-only mode: drop past history — the turn is just this input plus
   // the custom prompt (system). The current user row is always kept so the
