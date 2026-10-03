@@ -1,5 +1,6 @@
 // YouTube transcripts: id extraction, intent, caption parsing + picking.
 /// <reference types="jest" />
+import { env } from "../src/lib/config";
 import {
   extractYouTubeVideoId,
   fetchVideoTranscriptFor,
@@ -211,6 +212,105 @@ describe("fetchYouTubeTranscriptDetailed", () => {
       ok: false,
       reason: "no-captions",
     });
+  });
+});
+
+describe("fetchYouTubeTranscriptDetailed official API", () => {
+  const OLD_KEY = (env as any).YOUTUBE_API_KEY;
+  afterEach(() => {
+    jest.restoreAllMocks();
+    (env as any).YOUTUBE_API_KEY = OLD_KEY;
+  });
+
+  const videosOk = {
+    ok: true,
+    json: async () => ({ items: [{ snippet: { title: "Official Title" }, status: { privacyStatus: "public" } }] }),
+  };
+  const captionsOk = {
+    ok: true,
+    json: async () => ({
+      items: [
+        { id: "trk-en", snippet: { language: "en", trackKind: "standard" } },
+        { id: "trk-asr", snippet: { language: "en", trackKind: "ASR" } },
+      ],
+    }),
+  };
+  const downloadOk = {
+    ok: true,
+    text: async () => `<transcript><text start="0" dur="1">official words</text></transcript>`,
+  };
+
+  it("uses videos.list + captions.list + download when the key is set", async () => {
+    (env as any).YOUTUBE_API_KEY = "test-yt-key";
+    (global as any).fetch = jest
+      .fn()
+      .mockResolvedValueOnce(videosOk)
+      .mockResolvedValueOnce(captionsOk)
+      .mockResolvedValueOnce(downloadOk);
+    const r = await fetchYouTubeTranscriptDetailed("dQw4w9WgXcQ");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.transcript.title).toBe("Official Title");
+      expect(r.transcript.language).toBe("en");
+      expect(r.transcript.text).toBe("official words");
+    }
+    const calls = ((global as any).fetch as jest.Mock).mock.calls;
+    expect(calls[0][0]).toContain("youtube/v3/videos");
+    expect(calls[1][0]).toContain("youtube/v3/captions?");
+    expect(calls[2][0]).toContain("youtube/v3/captions/trk-en");
+    expect(((global as any).fetch as jest.Mock).mock.calls).toHaveLength(3);
+  });
+
+  it("reports unplayable for private videos without further calls", async () => {
+    (env as any).YOUTUBE_API_KEY = "test-yt-key";
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [{ snippet: { title: "P" }, status: { privacyStatus: "private" } }] }),
+    });
+    // second call (captions.list) returns empty either way
+    ((global as any).fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ items: [{ snippet: { title: "P" }, status: { privacyStatus: "private" } }] }),
+    });
+    const r = await fetchYouTubeTranscriptDetailed("dQw4w9WgXcQ");
+    expect(r).toEqual({ ok: false, reason: "unplayable" });
+  });
+
+  it("reports no-captions when the official list is empty", async () => {
+    (env as any).YOUTUBE_API_KEY = "test-yt-key";
+    (global as any).fetch = jest
+      .fn()
+      .mockResolvedValueOnce(videosOk)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [] }) });
+    const r = await fetchYouTubeTranscriptDetailed("dQw4w9WgXcQ");
+    expect(r).toEqual({ ok: false, reason: "no-captions" });
+  });
+
+  it("falls back to InnerTube when the official download fails", async () => {
+    (env as any).YOUTUBE_API_KEY = "test-yt-key";
+    (global as any).fetch = jest
+      .fn()
+      .mockResolvedValueOnce(videosOk)
+      .mockResolvedValueOnce(captionsOk)
+      .mockResolvedValueOnce({ ok: false }) // download denied
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          videoDetails: { title: "Inner" },
+          captions: {
+            playerCaptionsTracklistRenderer: {
+              captionTracks: [{ baseUrl: "https://caps.example/t", languageCode: "en" }],
+            },
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => `<transcript><text start="0" dur="1">inner words</text></transcript>`,
+      });
+    const r = await fetchYouTubeTranscriptDetailed("dQw4w9WgXcQ");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.transcript.text).toBe("inner words");
   });
 });
 

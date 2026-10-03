@@ -5,6 +5,7 @@
 // a video link asking to transcribe it, the full text is injected so the
 // model answers from (or reproduces) the exact words.
 import type { WebResult } from "./websearch";
+import { env } from "./config";
 import { logger } from "./logger";
 
 const UA =
@@ -123,6 +124,93 @@ export type VideoTranscript = {
 
 export type TranscriptFailureReason = "no-captions" | "unreachable" | "unplayable";
 
+// ---- Official YouTube Data API v3 (needs YOUTUBE_API_KEY) ------------------
+// videos.list tells availability + title; captions.list tells exactly which
+// caption tracks exist; captions.download fetches the bytes (tfmt=srv3 parses
+// with the same parser as timedtext). Anything failing here falls through to
+// the keyless InnerTube path below.
+
+type OfficialTrack = { id: string; language: string; kind: string };
+
+const officialGet = async (path: string, params: Record<string, string>, key: string): Promise<any | null> => {
+  try {
+    const qs = new URLSearchParams({ ...params, key });
+    const res = await fetch(`https://www.googleapis.com/youtube/v3/${path}?${qs.toString()}`, {
+      headers: { Accept: "application/json", "User-Agent": UA },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+};
+
+const pickOfficialTrack = (tracks: OfficialTrack[], lang: string): OfficialTrack | null => {
+  if (tracks.length === 0) return null;
+  const exact = tracks.filter((t) => t.language === lang);
+  const prefix = tracks.filter((t) => t.language.startsWith(`${lang}-`) || lang.startsWith(`${t.language}-`));
+  for (const pool of [exact, prefix]) {
+    const manual = pool.find((t) => t.kind !== "ASR");
+    if (manual) return manual;
+    if (pool.length > 0) return pool[0];
+  }
+  const manual = tracks.find((t) => t.kind !== "ASR");
+  return manual ?? tracks[0] ?? null;
+};
+
+type OfficialMeta = {
+  title: string;
+  privacyStatus: string;
+  found: boolean;
+  tracks: OfficialTrack[];
+};
+
+const fetchOfficialMeta = async (videoId: string, key: string): Promise<OfficialMeta | null> => {
+  const [videos, captions] = await Promise.all([
+    officialGet("videos", { part: "snippet,status", id: videoId }, key),
+    officialGet("captions", { part: "snippet", videoId }, key),
+  ]);
+  if (!videos && !captions) return null;
+  const item = videos?.items?.[0];
+  const tracks: OfficialTrack[] = Array.isArray(captions?.items)
+    ? captions.items
+        .filter((it: any) => typeof it?.id === "string")
+        .map((it: any) => ({
+          id: it.id,
+          language: String(it?.snippet?.language ?? ""),
+          kind: String(it?.snippet?.trackKind ?? "standard"),
+        }))
+        .filter((t: OfficialTrack) => t.language.length > 0)
+    : [];
+  return {
+    title: typeof item?.snippet?.title === "string" ? item.snippet.title.slice(0, 200) : "",
+    privacyStatus: String(item?.status?.privacyStatus ?? ""),
+    found: !!item,
+    tracks,
+  };
+};
+
+const tryOfficialDownload = async (
+  trackId: string,
+  key: string
+): Promise<TranscriptLine[] | null> => {
+  try {
+    const qs = new URLSearchParams({ tfmt: "srv3", key });
+    const res = await fetch(`https://www.googleapis.com/youtube/v3/captions/${trackId}?${qs.toString()}`, {
+      headers: { "User-Agent": UA },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return null;
+    const xml = await res.text();
+    if (!xml) return null;
+    const lines = parseTranscriptXml(xml);
+    return lines.length > 0 ? lines : null;
+  } catch {
+    return null;
+  }
+};
+
 export type TranscriptFetchResult =
   | { ok: true; transcript: VideoTranscript }
   | { ok: false; reason: TranscriptFailureReason };
@@ -212,6 +300,14 @@ const fetchPlayerViaWatchPage = async (videoId: string): Promise<PlayerData> => 
   }
 };
 
+const linesToText = (lines: TranscriptLine[]): string =>
+  lines
+    .map((l) => l.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_TRANSCRIPT_CHARS);
+
 const playerDataToTracks = (player: any): { title: string; tracks: CaptionTrack[] } => ({
   title:
     typeof player?.videoDetails?.title === "string" && player.videoDetails.title
@@ -224,9 +320,37 @@ export const fetchYouTubeTranscriptDetailed = async (
   videoId: string,
   lang = "en"
 ): Promise<TranscriptFetchResult> => {
-  // IOS first (caption URLs work without extra auth), then the TV client
-  // (often passes bot-checks that fail datacenter IPs on other clients),
-  // then the watch-page scrape. First playable response with tracks wins.
+  const key = env.YOUTUBE_API_KEY?.trim();
+  // 0) Official Data API v3 when the user configured a key: authoritative
+  // availability + track list, and a direct download attempt.
+  if (key) {
+    const meta = await fetchOfficialMeta(videoId, key);
+    if (meta) {
+      if (meta.privacyStatus === "private" || (!meta.found && meta.tracks.length === 0)) {
+        logger.warn({ videoId, via: "official" }, "YouTube video unavailable");
+        return { ok: false, reason: "unplayable" };
+      }
+      const title = meta.title || videoId;
+      const track = pickOfficialTrack(meta.tracks, lang);
+      if (!track) {
+        logger.warn({ videoId, via: "official" }, "YouTube video has no captions");
+        return { ok: false, reason: "no-captions" };
+      }
+      const lines = await tryOfficialDownload(track.id, key);
+      if (lines) {
+        const text = linesToText(lines);
+        if (text) {
+          return {
+            ok: true,
+            transcript: { videoId, title, language: track.language, lines, text },
+          };
+        }
+      }
+      // Official download failed (often OAuth-only) — keyless routes below.
+      logger.warn({ videoId, via: "official-download" }, "Official captions download failed, trying keyless routes");
+    }
+  }
+  // 1+) Keyless routes: IOS player, TV player, watch-page scrape.
   const attempts: Array<{ data: any } | null> = [await fetchPlayerViaInnerTube(videoId, lang, "ios")];
   const firstStatus = attempts[0]?.data?.playabilityStatus?.status;
   if (!attempts[0] || (firstStatus && firstStatus !== "OK")) {
@@ -279,12 +403,7 @@ export const fetchYouTubeTranscriptDetailed = async (
     if (!xml) return { ok: false, reason: "unreachable" };
     const lines = parseTranscriptXml(xml);
     if (lines.length === 0) return { ok: false, reason: "no-captions" };
-    const text = lines
-      .map((l) => l.text)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, MAX_TRANSCRIPT_CHARS);
+    const text = linesToText(lines);
     if (!text) return { ok: false, reason: "no-captions" };
     return {
       ok: true,
