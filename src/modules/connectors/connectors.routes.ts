@@ -44,7 +44,9 @@ const requireAuthForAuthorize = (req: Request, res: Response, next: NextFunction
 
   const loginRedirect = () => {
     const origin = env.APP_ORIGIN.split(",")[0]?.trim().replace(/\/+$/, "") || "";
-    return res.redirect(302, `${origin}/login?next=/account?connector=canva`);
+    // next is encoded so /account?connector=canva survives as one param.
+    const next = encodeURIComponent("/account?connector=canva");
+    return res.redirect(302, `${origin}/login?next=${next}`);
   };
 
   if (!token) return loginRedirect();
