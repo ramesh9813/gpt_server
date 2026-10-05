@@ -105,6 +105,16 @@ export const wantsWebSearch = (text: string): boolean => {
   return SEARCH_INTENT_RE.test(t) || CURRENT_PHRASE_RE.test(t) || RECENCY_QUESTION_RE.test(t);
 };
 
+// Attached-document marker: the client inlines uploaded files as
+// "[PDF: name]…", "[file: name …]", "[audio file: …]", "[transcribed
+// audio …]". Such turns must be answered from the document itself —
+// never auto-trigger transcript / page-fetch / web search on the
+// document's own words (an explicit search toggle still applies).
+const ATTACHED_DOC_RE = /\[(pdf|file|audio file):|\[transcribed audio/i;
+
+export const hasAttachedDocument = (text: string): boolean =>
+  ATTACHED_DOC_RE.test(text || "");
+
 // Video intent: "watch …", "trailer", "song", "vlog" and friends route to
 // YouTube (auto mode) instead of web search. "Video of …" counts only
 // without a generation verb — "generate a video of …" stays a creation

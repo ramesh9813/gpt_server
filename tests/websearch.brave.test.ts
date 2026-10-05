@@ -1,7 +1,7 @@
 // Brave search integration: intent detection + llm/context mapping.
 /// <reference types="jest" />
 import { env } from "../src/lib/config";
-import { enrichWithImages, extractOgImage, wantsWebSearch, wantsYouTubeSearch, youTubeVideoIdFromUrl } from "../src/lib/websearch";
+import { enrichWithImages, extractOgImage, hasAttachedDocument, wantsWebSearch, wantsYouTubeSearch, youTubeVideoIdFromUrl } from "../src/lib/websearch";
 import { performWebSearch } from "../src/lib/websearch";
 import { ensureSingleSourcesSection } from "../src/lib/websearch";
 import { isSearchProvider, providerOrder, resolveSearchProvider } from "../src/lib/searchSettings";
@@ -34,6 +34,21 @@ describe("wantsWebSearch", () => {
     "summarize this article",
     "",
   ])("stays off for %p", (q) => expect(wantsWebSearch(q)).toBe(false));
+});
+
+describe("hasAttachedDocument", () => {
+  it.each([
+    "[PDF: report.pdf]\nunderstand this pdf, latest prices inside",
+    "summarize this\n[file: notes.txt (text/plain, 2KB)]\nwhat happened in 2024",
+    "[audio file: clip.mp3 (audio/mpeg, 100KB)]\n[transcribed audio]: current news discussion",
+    "extract the pdf [PDF: scan.pdf (120KB) — binary PDF, text could not be extracted here]",
+  ])("detects %p", (q) => expect(hasAttachedDocument(q)).toBe(true));
+
+  it.each([
+    "search for the best phone",
+    "summarize this article https://example.com/piece",
+    "",
+  ])("ignores %p", (q) => expect(hasAttachedDocument(q)).toBe(false));
 });
 
 describe("performWebSearch via Brave", () => {

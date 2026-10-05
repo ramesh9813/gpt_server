@@ -7,7 +7,7 @@ import { generateFollowups, isFollowupsEnabled } from "../followups";
 import { getAvailableTools, executeMcpTool, type LlmToolDef } from "../../llm/toolBridge";
 import { RESEARCH_SYSTEM_PROMPT, WEB_SEARCH_SYSTEM_PROMPT } from "../chatPrompts";
 import { redactForLog, type OpenRouterMessage } from "../chatMappers";
-import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../../lib/websearch";
+import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../../lib/websearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../../lib/youtubeTranscript";
 import { fetchLinkedPages } from "../../../lib/pageContent";
@@ -126,10 +126,14 @@ export const streamOpenRouterCompletion = async (
   // YouTube link + transcribe ask: fetch the captions and answer from the
   // exact spoken text. Then pasted page links, then web search (never on
   // research turns). Stage events narrate the wait above the typing dots.
+  // Attached files (PDF/text/audio) are answered from the document itself:
+  // never auto-run transcript / page-fetch / web search on the document's
+  // own words. An explicit search toggle still applies.
+  const hasDoc = hasAttachedDocument(rawQuery);
   const ytId = extractYouTubeVideoId(rawQuery);
-  const ytWanted = ytId !== null && wantsTranscript(rawQuery);
+  const ytWanted = ytId !== null && wantsTranscript(rawQuery) && !hasDoc;
   if (ytWanted) sendEvent("stage", { text: "Getting transcript…" });
-  const yt = await fetchVideoTranscriptFor(rawQuery).catch(() => null);
+  const yt = hasDoc ? null : await fetchVideoTranscriptFor(rawQuery).catch(() => null);
   if (yt && "block" in yt) {
     sendEvent("stage", { text: `Reading transcript (${yt.lines} lines)…` });
     for (const s of yt.sources) {
@@ -141,8 +145,8 @@ export const streamOpenRouterCompletion = async (
     ];
   } else {
   const pageUrls = extractPageUrls(rawQuery);
-  if (pageUrls.length > 0) sendEvent("stage", { text: `Opening ${pageHost(pageUrls[0])}…` });
-  const linked = await fetchLinkedPages(rawQuery).catch(() => null);
+  if (pageUrls.length > 0 && !hasDoc) sendEvent("stage", { text: `Opening ${pageHost(pageUrls[0])}…` });
+  const linked = hasDoc ? null : await fetchLinkedPages(rawQuery).catch(() => null);
   if (linked) {
     linked.sources.forEach((s, i) =>
       sendEvent("stage", { text: stageLineForSource(i, linked.sources.length, s.title, s.url) })
@@ -154,7 +158,7 @@ export const streamOpenRouterCompletion = async (
       { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${linked.block}` },
       ...messages,
     ];
-  } else if ((webSearch === true || wantsWebSearch(rawQuery)) && research !== true) {
+  } else if ((webSearch === true || (!hasDoc && wantsWebSearch(rawQuery))) && research !== true) {
     const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
     if (query) {
       try {
