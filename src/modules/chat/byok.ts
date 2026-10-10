@@ -323,6 +323,9 @@ export const streamByokCompletion = async (
     let buffer = "";
     let done = false;
     let usage: any = null;
+    // Provider stop reason (OpenAI-shaped finish_reason): "length" means the
+    // answer was cut at the output ceiling — surfaced below, never silent.
+    let stopReason: string | null = null;
     // Every parsed frame + raw bytes: feeds the non-SSE fallback (gateways
     // that ignore "stream": true) and the empty-stream diagnostic log.
     const parsedPayloads: any[] = [];
@@ -442,6 +445,8 @@ export const streamByokCompletion = async (
               assistantContent += delta;
               sendEvent("token", { delta });
             }
+            const fr = parsed.choices?.[0]?.finish_reason;
+            if (typeof fr === "string" && fr) stopReason = fr;
             // Thinking stream (DeepSeek reasoner, xAI grok reasoning models
             // etc. emit delta.reasoning / reasoning_content): forward only in
             // Think mode, same contract as the OpenRouter path.
@@ -501,6 +506,8 @@ export const streamByokCompletion = async (
               assistantContent += tailDelta;
               sendEvent("token", { delta: tailDelta });
             }
+            const tailFr = parsed.choices?.[0]?.finish_reason;
+            if (typeof tailFr === "string" && tailFr) stopReason = tailFr;
             const tailReasoning =
               parsed.choices?.[0]?.delta?.reasoning ??
               parsed.choices?.[0]?.delta?.reasoning_content;
@@ -558,6 +565,14 @@ export const streamByokCompletion = async (
     }
 
     const sources = [...sourceMap.values()];
+    // Limit-stop honesty: the provider ran out of output budget mid-answer.
+    // Name it inline so a severed sentence is never mistaken for complete —
+    // the user can simply ask to continue.
+    if (stopReason === "length" && assistantContent) {
+      logger.warn({ provider: provider.id, model }, "BYOK response stopped at output limit");
+      assistantContent += "\n\n…[cut off at the output limit — send “continue” for the rest]";
+      sendEvent("token", { delta: "\n\n…[cut off at the output limit — send “continue” for the rest]" });
+    }
     // Bottom links render from the persisted `sources` row (client plain
     // list) — no body footer, so URLs never appear twice. A model-written
     // trailing Sources section is still swapped for the canonical URL list

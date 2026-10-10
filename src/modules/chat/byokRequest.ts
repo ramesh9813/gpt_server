@@ -275,6 +275,14 @@ export const buildByokStreamRequest = (
     // Artifact turns emit a full HTML document — provider defaults truncate
     // them mid-code, so set an explicit ceiling (other turns untouched).
     ...(isArtifactTurn ? { max_tokens: TOKEN.ARTIFACT_MAX_TOKENS } : {}),
+    // Groq cuts responses short when max_tokens is omitted (provider-side
+    // default ceiling), so always send an explicit budget: thinking turns
+    // need headroom above the reasoning trace, plain turns get the default.
+    // Other OpenAI-compatible providers default to their model max — left
+    // untouched so strict gateways/small models never 400.
+    ...(provider.id === "groq" && !isArtifactTurn
+      ? { max_tokens: allowReasoning ? TOKEN.BYOK_REASONING_MAX_TOKENS : TOKEN.BYOK_DEFAULT_MAX_TOKENS }
+      : {}),
     // Web search via an OpenRouter BYOK key uses the same native tool as the
     // built-in path.
     ...(opts.webSearch === true && provider.id === "openrouter"

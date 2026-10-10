@@ -1,6 +1,7 @@
 // Request-shape coverage for every BYOK provider kind. Guards the bugs we hit
 // in practice: strict gateways 422ing on stream_options, wrong endpoints for
 // Gemini/Anthropic, missing thinking/web-search wiring, wrong auth headers.
+/// <reference types="jest" />
 import { BYOK_PROVIDERS, parseByokHeaders, type ByokProviderId } from "../src/lib/byok";
 import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisionRejection, stripImageParts } from "../src/modules/chat/byokRequest";
 import type { OpenRouterMessage } from "../src/modules/chat/chat.service";
@@ -129,6 +130,18 @@ describe("buildByokStreamRequest per provider", () => {
       thinkingConfig: { includeThoughts: true },
       maxOutputTokens: 8192,
     });
+  });
+
+  it("groq always sends an explicit output ceiling (provider cuts short without one)", () => {
+    // Plain turns get the default budget, think turns headroom above the
+    // reasoning trace, artifact turns keep the document ceiling. Every other
+    // OpenAI-compatible provider still sends nothing (model-max default).
+    expect(buildByokStreamRequest(mk("groq"), MESSAGES).body.max_tokens).toBe(4096);
+    expect(buildByokStreamRequest(mk("groq"), MESSAGES, { think: true }).body.max_tokens).toBe(8192);
+    expect(buildByokStreamRequest(mk("groq"), MESSAGES, { artifact: true }).body.max_tokens).toBe(16000);
+    for (const id of OPENAI_KIND_IDS.filter((x) => x !== "groq")) {
+      expect(buildByokStreamRequest(mk(id), MESSAGES).body.max_tokens).toBeUndefined();
+    }
   });
 
   it("maps provider statuses to actionable error text", () => {
