@@ -47,7 +47,7 @@ const buildVideoPrompt = async (conversationId: string, prompt: string, history?
 export const sendVideoReply = async (
   req: any,
   res: any,
-  opts: { assistantMessageId: string; conversationId: string; prompt: string; selectedModel: string; history?: unknown }
+  opts: { assistantMessageId: string; conversationId: string; prompt: string; selectedModel: string; history?: unknown; systemPrompt?: string }
 ) => {
   const { assistantMessageId, conversationId, prompt, selectedModel } = opts;
   sseHead(res);
@@ -64,7 +64,13 @@ export const sendVideoReply = async (
       );
     }
     // /videos takes a prompt string only — prepend compact recent user context.
-    const effectivePrompt = await buildVideoPrompt(conversationId, prompt, (opts as { history?: unknown }).history);
+    // Folder + chat custom prompts bind here too (prefix channel): every AI
+    // call carries them, media turns included.
+    let effectivePrompt = await buildVideoPrompt(conversationId, prompt, (opts as { history?: unknown }).history);
+    const tuning = typeof (opts as { systemPrompt?: unknown }).systemPrompt === "string"
+      ? String((opts as { systemPrompt?: string }).systemPrompt).trim()
+      : "";
+    if (tuning) effectivePrompt = `${tuning}\n\n${effectivePrompt}`;
     const submit = await fetch(`${env.OPENROUTER_BASE_URL}/videos`, {
       method: "POST",
       headers: {

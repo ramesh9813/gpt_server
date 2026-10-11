@@ -82,6 +82,9 @@ export type McqReplyOpts = {
   // When set, quiz generation runs on the user's own provider key (BYOK)
   // instead of the server-configured OpenRouter key.
   byok?: ByokRequest;
+  // Folder + chat custom prompts (already merged by the route): quiz
+  // generation binds them like every other AI call.
+  systemPrompt?: string;
 };
 
 const MCQ_REPEAT_BYPASS = /repeat|shuffle|again/i;
@@ -254,10 +257,11 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
         round,
         continuation,
       });
+      const tuning = typeof opts.systemPrompt === "string" ? opts.systemPrompt.trim() : "";
       const askMaxTokens = Math.min(8000, Math.max(2000, askCount * 250));
       // BYOK: ask the user's provider directly (same prompt + parsing).
       if (opts.byok) {
-        const text = await callByokText(opts.byok, askPrompt, {
+        const text = await callByokText(opts.byok, tuning ? `${tuning}\n\n${askPrompt}` : askPrompt, {
           maxTokens: askMaxTokens,
           temperature: 0.7,
         });
@@ -274,7 +278,9 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
           },
           body: JSON.stringify({
             model: selectedModel,
-            messages: [{ role: "user", content: askPrompt }],
+            messages: tuning
+              ? [{ role: "system", content: tuning }, { role: "user", content: askPrompt }]
+              : [{ role: "user", content: askPrompt }],
             max_tokens: Math.min(8000, Math.max(2000, askCount * 250)),
             temperature: 0.7,
           }),

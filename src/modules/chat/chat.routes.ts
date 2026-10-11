@@ -320,6 +320,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
         askedBank,
         round,
         byok,
+        systemPrompt: mergedSystemPrompt,
       });
     }
     const { messages, stats } = buildHistoryMessages(scopedHistory, {
@@ -377,6 +378,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       selectedModel,
       askedBank,
       round,
+      systemPrompt: mergedSystemPrompt,
     });
   }
 
@@ -390,6 +392,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       prompt: userMsgContent,
       selectedModel,
       history,
+      systemPrompt: mergedSystemPrompt,
     } as any);
   }
 
@@ -403,6 +406,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       selectedModel,
       history,
       images: userImages,
+      systemPrompt: mergedSystemPrompt,
     } as any);
   }
 

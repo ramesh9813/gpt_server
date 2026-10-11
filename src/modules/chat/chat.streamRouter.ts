@@ -103,7 +103,7 @@ export const handleStream = async (req: Request, res: Response) => {
     let quizCount = 0;
     try { quizCount = await (prisma.message as any).count({ where: { conversationId, NOT: { quiz: null } } }); } catch { quizCount = 0; }
     const round = (typeof quizCount === "number" ? quizCount : 0) + 1;
-    return sendMcqReply(req, res, { assistantMessageId: assistantMsg.id, conversationId, topic, selectedModel, askedBank, round, ...(byokArg ? { byok: byokArg } : {}) });
+    return sendMcqReply(req, res, { assistantMessageId: assistantMsg.id, conversationId, topic, selectedModel, askedBank, round, systemPrompt: mergedSystemPrompt, ...(byokArg ? { byok: byokArg } : {}) });
   };
 
   if (byok) {
@@ -121,8 +121,8 @@ export const handleStream = async (req: Request, res: Response) => {
   }
 
   if (wantsMcqFor(userMsgContent)) return handleMcq(userMsgContent);
-  if (wantsVideo(userMsgContent) || isVideoOnlyModel(selectedModel)) return sendVideoReply(req, res, { assistantMessageId: assistantMsg.id, conversationId, prompt: userMsgContent, selectedModel, history } as any);
-  if (wantsImageGeneration(userMsgContent) || isImageOnlyModel(selectedModel)) return sendImageReply(req, res, { assistantMessageId: assistantMsg.id, conversationId, prompt: userMsgContent, selectedModel, history, images: userImages } as any);
+  if (wantsVideo(userMsgContent) || isVideoOnlyModel(selectedModel)) return sendVideoReply(req, res, { assistantMessageId: assistantMsg.id, conversationId, prompt: userMsgContent, selectedModel, history, systemPrompt: mergedSystemPrompt } as any);
+  if (wantsImageGeneration(userMsgContent) || isImageOnlyModel(selectedModel)) return sendImageReply(req, res, { assistantMessageId: assistantMsg.id, conversationId, prompt: userMsgContent, selectedModel, history, images: userImages, systemPrompt: mergedSystemPrompt } as any);
 
   const { messages, stats } = buildHistoryMessages(history, { systemPrompt: mergedSystemPrompt, existingUserMessageId: streamUserMessageId });
   logger.info({ messages: redactForLog(messages as OpenRouterMessage[]), stats }, "Sending messages to OpenRouter");

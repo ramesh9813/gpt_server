@@ -20,7 +20,7 @@ const toUserContent = (text: string, images?: string[]): string | Array<{ type: 
 export const sendImageReply = async (
   req: any,
   res: any,
-  opts: { assistantMessageId: string; conversationId: string; prompt: string; selectedModel: string; history?: unknown; images?: string[] }
+  opts: { assistantMessageId: string; conversationId: string; prompt: string; selectedModel: string; history?: unknown; images?: string[]; systemPrompt?: string }
 ) => {
   const { assistantMessageId, conversationId, prompt, selectedModel } = opts;
   sseHead(res);
@@ -52,7 +52,10 @@ export const sendImageReply = async (
           base = arr.slice(0, -1);
         }
       }
-      const built = buildHistoryMessages(base, {});
+      const built = buildHistoryMessages(base, {
+        // Folder + chat custom prompts bind here too — every AI call carries them.
+        systemPrompt: (opts as { systemPrompt?: string }).systemPrompt,
+      });
       const rawImgs = (opts as { images?: unknown }).images;
       const currentImages = Array.isArray(rawImgs)
         ? rawImgs.filter((v): v is string => typeof v === "string" && v.startsWith("data:image/"))
