@@ -42,6 +42,7 @@ describe("hasAttachedDocument", () => {
     "summarize this\n[file: notes.txt (text/plain, 2KB)]\nwhat happened in 2024",
     "[audio file: clip.mp3 (audio/mpeg, 100KB)]\n[transcribed audio]: current news discussion",
     "extract the pdf [PDF: scan.pdf (120KB) — binary PDF, text could not be extracted here]",
+    "[video file: clip.mp4 (video/mp4, 1200KB)]\nwhat is happening in this video today",
   ])("detects %p", (q) => expect(hasAttachedDocument(q)).toBe(true));
 
   it.each([

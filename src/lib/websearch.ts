@@ -106,11 +106,11 @@ export const wantsWebSearch = (text: string): boolean => {
 };
 
 // Attached-document marker: the client inlines uploaded files as
-// "[PDF: name]…", "[file: name …]", "[audio file: …]", "[transcribed
-// audio …]". Such turns must be answered from the document itself —
-// never auto-trigger transcript / page-fetch / web search on the
-// document's own words (an explicit search toggle still applies).
-const ATTACHED_DOC_RE = /\[(pdf|file|audio file):|\[transcribed audio/i;
+// "[PDF: name]…", "[file: name …]", "[audio file: …]", "[video file: …]",
+// "[transcribed audio …]". Such turns must be answered from the attachment
+// itself — never auto-trigger transcript / page-fetch / web search on the
+// attachment's own words (an explicit search toggle still applies).
+const ATTACHED_DOC_RE = /\[(pdf|file|audio file|video file):|\[transcribed audio/i;
 
 export const hasAttachedDocument = (text: string): boolean =>
   ATTACHED_DOC_RE.test(text || "");
