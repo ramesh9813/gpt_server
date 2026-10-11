@@ -92,6 +92,23 @@ export const streamByokCompletion = async (
   // never auto-run transcript / page-fetch / web search on the document's
   // own words. An explicit search toggle still applies.
   const hasDoc = hasAttachedDocument(rawQuery);
+  // Follow-ups run PARALLEL to the answer: kicked off once ~300 chars have
+  // streamed (opening paragraphs carry the gist), awaited at stream end. The
+  // extra LLM round trip hides inside the remaining answer instead of
+  // lagging after `done`. Never rejects (resolves [] on any failure).
+  let followupsPromise: Promise<string[]> | null = null;
+  const kickFollowups = (snapshot: string) => {
+    if (followupsPromise) return;
+    const uid = (req as any).user?.id;
+    followupsPromise = (async (): Promise<string[]> => {
+      try {
+        if (!(await isFollowupsEnabled(uid))) return [];
+        return await generateByokFollowups(byok, snapshot);
+      } catch {
+        return [];
+      }
+    })();
+  };
   const ytId = extractYouTubeVideoId(rawQuery);
   const ytWanted = ytId !== null && wantsTranscript(rawQuery) && !hasDoc;
   if (ytWanted) sendEvent("stage", { text: "Getting transcript…" });
@@ -443,6 +460,7 @@ export const streamByokCompletion = async (
             const delta = parsed.choices?.[0]?.delta?.content;
             if (typeof delta === "string" && delta.length > 0) {
               assistantContent += delta;
+              if (assistantContent.length >= 300) kickFollowups(assistantContent);
               sendEvent("token", { delta });
             }
             const fr = parsed.choices?.[0]?.finish_reason;
@@ -606,10 +624,12 @@ export const streamByokCompletion = async (
     });
     // Best-effort follow-up questions, generated on the user's own provider
     // (same UX as the OpenRouter path; never fails the stream). Skipped
-    // entirely when the user turned follow-ups off in Settings.
+    // entirely when the user turned follow-ups off in Settings. Generation
+    // started mid-stream (see kickFollowups) so this await is usually
+    // already resolved — short answers kick off here as a fallback.
     try {
-      if (!(await isFollowupsEnabled((req as any).user?.id))) return safeEnd();
-      const followups = await generateByokFollowups(byok, assistantContent);
+      if (!followupsPromise) kickFollowups(assistantContent);
+      const followups = await followupsPromise!;
       if (followups.length > 0 && !res.writableEnded && !res.destroyed) {
         await prisma.message.update({
           where: { id: assistantMessageId },
