@@ -80,13 +80,21 @@ export const TIMEOUT = {
 // ---------- Token / truncation budgets ----------
 export const TOKEN = {
   RESEARCH_MAX_TOKENS: 8000,
+  // Default output ceiling for normal OpenRouter turns: provider defaults can
+  // cut answers short, so always send an explicit budget (research/artifact
+  // carry their own ceilings). Small-model 400s retry uncapped (see runTurn).
+  OPENROUTER_DEFAULT_MAX_TOKENS: 8192,
   // Artifact turns emit a full standalone HTML document — needs headroom so
   // simulations complete instead of truncating mid-code. Gemini caps output
   // lower, so it gets its own (universally accepted) ceiling.
   ARTIFACT_MAX_TOKENS: 16000,
   ARTIFACT_MAX_TOKENS_GEMINI: 8192,
   BYOK_REASONING_MAX_TOKENS: 8192,
-  BYOK_DEFAULT_MAX_TOKENS: 4096,
+  // Default output ceiling for every OpenAI-compatible BYOK turn: providers
+  // apply their own (sometimes tiny) default when max_tokens is omitted and
+  // cut answers mid-sentence, so always send an explicit budget. Small-model
+  // 400s fall back to uncapped via the token-limit retry (see byok.ts).
+  BYOK_DEFAULT_MAX_TOKENS: 8192,
   FOLLOWUPS_MAX_TOKENS: 150,
   MCQ_MAX_TOKENS_PER_QUESTION: 250,
   MCQ_MAX_TOKENS_CAP: 8000,

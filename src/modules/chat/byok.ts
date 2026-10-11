@@ -8,7 +8,7 @@ import type { ByokRequest } from "../../lib/byok";
 import { isFirewallChallengeBody } from "../../lib/byok";
 import { logger } from "../../lib/logger";
 import { generateByokFollowups, isFollowupsEnabled } from "./followups";
-import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisionRejection, stripImageParts } from "./byokRequest";
+import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isTokenLimitRejection, isVisionRejection, stripImageParts } from "./byokRequest";
 import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
@@ -285,6 +285,39 @@ export const streamByokCompletion = async (
       await new Promise((resolve) => setTimeout(resolve, 1500));
       if (!controller.signal.aborted) response = await doProviderFetch();
     }
+    // Output-ceiling rejection (small-context models / strict gateways 400
+    // on the explicit max_tokens): retry once with NO ceiling at all so the
+    // turn answers instead of failing. The probe consumes the body, so it is
+    // stashed for the vision check + final fail below (never re-read).
+    let prefetchedError: string | null = null;
+    if (
+      !response.ok &&
+      provider.kind === "openai" &&
+      !controller.signal.aborted &&
+      (response.status === 400 || response.status === 422 || response.status === 413)
+    ) {
+      try {
+        prefetchedError = await response.text();
+      } catch {
+        prefetchedError = "";
+      }
+      if (isTokenLimitRejection(response.status, prefetchedError)) {
+        logger.warn(
+          { provider: provider.name, model, status: response.status },
+          "BYOK ceiling rejected, retrying uncapped once"
+        );
+        const uncappedReq = buildByokStreamRequest(byok, searchMessages, {
+          think,
+          artifact,
+          webSearch,
+          noCeiling: true,
+        });
+        if (!controller.signal.aborted) {
+          response = await doProviderFetch(uncappedReq);
+          prefetchedError = null;
+        }
+      }
+    }
     // Vision fallback: OpenAI-compatible providers whose models reject
     // multimodal array content (e.g. Groq 400 "content must be a string")
     // get exactly one text-only retry so image sends still answer instead of
@@ -300,9 +333,9 @@ export const streamByokCompletion = async (
       hasMultimodalContent(searchMessages) &&
       !controller.signal.aborted
     ) {
-      let visionError = "";
+      let visionError = prefetchedError ?? "";
       try {
-        visionError = await response.text();
+        if (prefetchedError === null) visionError = await response.text();
         consumedError = visionError;
       } catch {
         // best-effort drain only
@@ -331,7 +364,7 @@ export const streamByokCompletion = async (
 
     if (!response.ok || !response.body) {
       const errorText =
-        consumedError ?? (response.body ? await response.text() : "no response body");
+        consumedError ?? prefetchedError ?? (response.body ? await response.text() : "no response body");
       return fail(response.status, errorText);
     }
 

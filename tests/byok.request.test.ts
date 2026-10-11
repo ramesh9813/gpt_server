@@ -3,7 +3,7 @@
 // Gemini/Anthropic, missing thinking/web-search wiring, wrong auth headers.
 /// <reference types="jest" />
 import { BYOK_PROVIDERS, parseByokHeaders, type ByokProviderId } from "../src/lib/byok";
-import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isVisionRejection, stripImageParts } from "../src/modules/chat/byokRequest";
+import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isTokenLimitRejection, isVisionRejection, stripImageParts } from "../src/modules/chat/byokRequest";
 import type { OpenRouterMessage } from "../src/modules/chat/chat.service";
 
 const MESSAGES: OpenRouterMessage[] = [
@@ -111,9 +111,9 @@ describe("buildByokStreamRequest per provider", () => {
   });
 
   it("artifact turns raise the output ceiling so simulations complete", () => {
-    // OpenAI-compatible: no cap on plain turns, 16000 on artifact turns.
+    // OpenAI-compatible: default budget on plain turns, 16000 on artifact turns.
     const plainOpenai = buildByokStreamRequest(mk("openai"), MESSAGES);
-    expect(plainOpenai.body.max_tokens).toBeUndefined();
+    expect(plainOpenai.body.max_tokens).toBe(8192);
     const artifactOpenai = buildByokStreamRequest(mk("openai"), MESSAGES, { artifact: true });
     expect(artifactOpenai.body.max_tokens).toBe(16000);
     // Anthropic: artifact beats the thinking default.
@@ -132,16 +132,28 @@ describe("buildByokStreamRequest per provider", () => {
     });
   });
 
-  it("groq always sends an explicit output ceiling (provider cuts short without one)", () => {
+  it("every OpenAI-compatible turn sends an explicit output ceiling (omitted max_tokens lets providers cut answers short)", () => {
     // Plain turns get the default budget, think turns headroom above the
-    // reasoning trace, artifact turns keep the document ceiling. Every other
-    // OpenAI-compatible provider still sends nothing (model-max default).
-    expect(buildByokStreamRequest(mk("groq"), MESSAGES).body.max_tokens).toBe(4096);
-    expect(buildByokStreamRequest(mk("groq"), MESSAGES, { think: true }).body.max_tokens).toBe(8192);
-    expect(buildByokStreamRequest(mk("groq"), MESSAGES, { artifact: true }).body.max_tokens).toBe(16000);
-    for (const id of OPENAI_KIND_IDS.filter((x) => x !== "groq")) {
-      expect(buildByokStreamRequest(mk(id), MESSAGES).body.max_tokens).toBeUndefined();
+    // reasoning trace, artifact turns keep the document ceiling.
+    for (const id of OPENAI_KIND_IDS) {
+      expect(buildByokStreamRequest(mk(id), MESSAGES).body.max_tokens).toBe(8192);
+      expect(buildByokStreamRequest(mk(id), MESSAGES, { think: true }).body.max_tokens).toBe(8192);
+      expect(buildByokStreamRequest(mk(id), MESSAGES, { artifact: true }).body.max_tokens).toBe(16000);
     }
+    // noCeiling is the escape hatch for the token-limit retry.
+    expect(buildByokStreamRequest(mk("groq"), MESSAGES, { noCeiling: true }).body.max_tokens).toBeUndefined();
+    expect(buildByokStreamRequest(mk("openai"), MESSAGES, { artifact: true, noCeiling: true }).body.max_tokens).toBeUndefined();
+  });
+
+  it("detects ceiling rejections for the uncapped retry (and only those)", () => {
+    expect(isTokenLimitRejection(400, "max_tokens is too large for model")).toBe(true);
+    expect(isTokenLimitRejection(400, "This model's maximum context length is 8192 tokens")).toBe(true);
+    expect(isTokenLimitRejection(422, "context length exceeded")).toBe(true);
+    expect(isTokenLimitRejection(400, "Unsupported parameter: 'max_tokens'")).toBe(true);
+    expect(isTokenLimitRejection(400, "messages[15].content must be a string")).toBe(false);
+    expect(isTokenLimitRejection(400, "Invalid or revoked API key")).toBe(false);
+    expect(isTokenLimitRejection(429, "max_tokens is too large")).toBe(false);
+    expect(isTokenLimitRejection(500, "maximum context")).toBe(false);
   });
 
   it("maps provider statuses to actionable error text", () => {

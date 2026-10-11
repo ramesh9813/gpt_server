@@ -4,6 +4,7 @@ import { env } from "../../../lib/config";
 import { logger } from "../../../lib/logger";
 import { TOKEN } from "../../../lib/constants";
 import { generateFollowups, isFollowupsEnabled } from "../followups";
+import { isTokenLimitRejection } from "../byokRequest";
 import { getAvailableTools, executeMcpTool, type LlmToolDef } from "../../llm/toolBridge";
 import { RESEARCH_SYSTEM_PROMPT, WEB_SEARCH_SYSTEM_PROMPT } from "../chatPrompts";
 import { redactForLog, type OpenRouterMessage } from "../chatMappers";
@@ -74,6 +75,9 @@ export const streamOpenRouterCompletion = async (
 
   let assistantContent = "";
   let assistantReasoning = "";
+  // Provider stop reason (finish_reason): "length" means the answer was cut
+  // at the output ceiling — surfaced below, never a silent trim.
+  let stopReason: string | null = null;
   let lastPersistedLength = 0;
   let lastPersistedAt = Date.now();
   const sourceMap = new Map<string, { title: string; url: string; image?: string }>();
@@ -243,14 +247,22 @@ export const streamOpenRouterCompletion = async (
     };
     if (research) requestBody.max_tokens = 8000;
     if (artifact) requestBody.max_tokens = TOKEN.ARTIFACT_MAX_TOKENS;
+    if (!research && !artifact) {
+      // Normal turns: provider defaults can cut answers short — always send
+      // an explicit budget (small-model 400s retry uncapped below).
+      requestBody.max_tokens = TOKEN.OPENROUTER_DEFAULT_MAX_TOKENS;
+    }
     if (research || think) requestBody.include_reasoning = true;
 
-    let response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json", "HTTP-Referer": env.APP_ORIGIN, "X-Title": "ChatUI" },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal,
-    });
+    const postTurn = (body: Record<string, unknown>) =>
+      fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json", "HTTP-Referer": env.APP_ORIGIN, "X-Title": "ChatUI" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    let lastRequestBody: Record<string, unknown> = requestBody;
+    let response = await postTurn(requestBody);
     if (!response.ok && useWebTool) {
       logger.warn({ status: response.status }, "OpenRouter web-search turn failed, retrying without tools");
       searchNotice = "Web search isn't available for the selected model — answering from general knowledge.";
@@ -259,18 +271,36 @@ export const streamOpenRouterCompletion = async (
         model: selectedModel,
         messages: [{ role: "system", content: WEB_SEARCH_SYSTEM_PROMPT }, ...turnMessages],
         stream: true,
+        ...(artifact ? { max_tokens: TOKEN.ARTIFACT_MAX_TOKENS } : { max_tokens: TOKEN.OPENROUTER_DEFAULT_MAX_TOKENS }),
         ...(toolsForFallback.length > 0 ? { tools: toolsForFallback, tool_choice: "auto" } : {}),
       };
-      response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json", "HTTP-Referer": env.APP_ORIGIN, "X-Title": "ChatUI" },
-        body: JSON.stringify(fallbackBody),
-        signal: controller.signal,
-      });
+      response = await postTurn(fallbackBody);
+      lastRequestBody = fallbackBody;
+    }
+    // Output-ceiling rejection (small-context models 400 on the explicit
+    // max_tokens): retry once with NO ceiling so the turn answers instead of
+    // failing. The probe consumes the body — stashed for the error read below.
+    let prefetchedOpenRouterError: string | null = null;
+    if (
+      !response.ok &&
+      !controller.signal.aborted &&
+      (response.status === 400 || response.status === 422 || response.status === 413)
+    ) {
+      try {
+        prefetchedOpenRouterError = await response.text();
+      } catch {
+        prefetchedOpenRouterError = "";
+      }
+      if (isTokenLimitRejection(response.status, prefetchedOpenRouterError)) {
+        logger.warn({ status: response.status }, "OpenRouter ceiling rejected, retrying uncapped once");
+        delete lastRequestBody.max_tokens;
+        response = await postTurn(lastRequestBody);
+        prefetchedOpenRouterError = null;
+      }
     }
     logger.info({ status: response.status }, "OpenRouter response status");
     if (!response.ok || !response.body) {
-      const errorText = await response.text();
+      const errorText = prefetchedOpenRouterError ?? await response.text();
       logger.error({ errorText: errorText.slice(0, 2000) }, "OpenRouter error");
       await prisma.message.update({ where: { id: assistantMessageId }, data: { status: "ERROR", error: errorText } });
       sendEvent("error", { code: "OPENROUTER_ERROR", message: `OpenRouter error: ${errorText}` });
@@ -302,6 +332,8 @@ export const streamOpenRouterCompletion = async (
             if (assistantContent.length >= 300) kickFollowups(assistantContent);
             sendEvent("token", { delta });
           }
+          const fr = parsed.choices?.[0]?.finish_reason;
+          if (typeof fr === "string" && fr) stopReason = fr;
           const reasoning = parsed.choices?.[0]?.delta?.reasoning ?? parsed.choices?.[0]?.delta?.reasoning_content;
           if (allowReasoning && typeof reasoning === "string" && reasoning.length > 0) { assistantReasoning += reasoning; sendEvent("reasoning", { delta: reasoning }); }
           const toolCallDeltas = parsed.choices?.[0]?.delta?.tool_calls;
@@ -365,6 +397,12 @@ export const streamOpenRouterCompletion = async (
       ] as unknown as OpenRouterMessage[];
     }
     const sources = [...sourceMap.values()];
+    // Limit-stop honesty: the provider ran out of output budget mid-answer.
+    // Name it inline so a severed sentence is never mistaken for complete.
+    if (stopReason === "length" && assistantContent) {
+      assistantContent += "\n\n…[cut off at the output limit — send “continue” for the rest]";
+      sendEvent("token", { delta: "\n\n…[cut off at the output limit — send “continue” for the rest]" });
+    }
     // One list only: a model-written trailing Sources section is swapped for
     // the canonical URL list, otherwise the footer is appended as before.
     const withFooter = ensureSingleSourcesSection(assistantContent, sources);

@@ -13,6 +13,7 @@ import { fileAttachmentsSchema } from "../../lib/fileAttachments";
 import { combineFilesIntoPrompt } from "../../lib/fileAttachments";
 import { TOKEN } from "../../lib/constants";
 import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../lib/websearch";
+import { isTokenLimitRejection } from "./byokRequest";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
 import { resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
@@ -174,6 +175,9 @@ export const streamOpenRouterCompletion = async (
   req.on("close", () => controller.abort());
   let assistantContent = "";
   let assistantReasoning = "";
+  // Provider stop reason (finish_reason): "length" means the answer was cut
+  // at the output ceiling — surfaced below, never a silent trim.
+  let stopReason: string | null = null;
   let lastPersistedLength = 0;
   let lastPersistedAt = Date.now();
   // Web-search citations collected from the provider stream (url_citation
@@ -376,12 +380,18 @@ export const streamOpenRouterCompletion = async (
       // ceiling so the document finishes through </html> + closing fence.
       requestBody.max_tokens = TOKEN.ARTIFACT_MAX_TOKENS;
     }
+    if (!research && !artifact) {
+      // Normal turns: provider defaults can cut answers short — always send
+      // an explicit budget (small-model 400s retry uncapped below).
+      requestBody.max_tokens = TOKEN.OPENROUTER_DEFAULT_MAX_TOKENS;
+    }
     if (research || think) {
       // Deep-research and "Thinking" mode runs stream thinking tokens before
       // the synthesis; request + forward them (no server timeout is imposed —
       // the stream stays open until the model finishes or the client drops).
       requestBody.include_reasoning = true;
     }
+    let lastRequestBody: Record<string, unknown> = requestBody;
     let response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
@@ -409,6 +419,7 @@ export const streamOpenRouterCompletion = async (
           ...turnMessages,
         ],
         stream: true,
+        ...(artifact ? { max_tokens: TOKEN.ARTIFACT_MAX_TOKENS } : { max_tokens: TOKEN.OPENROUTER_DEFAULT_MAX_TOKENS }),
         ...(toolsForFallback.length > 0 ? { tools: toolsForFallback, tool_choice: "auto" } : {}),
       };
       response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
@@ -422,11 +433,44 @@ export const streamOpenRouterCompletion = async (
         body: JSON.stringify(fallbackBody),
         signal: controller.signal,
       });
+      lastRequestBody = fallbackBody;
+    }
+    // Output-ceiling rejection (small-context models 400 on the explicit
+    // max_tokens): retry once with NO ceiling so the turn answers instead of
+    // failing. The probe consumes the body — stashed for the error read below.
+    let prefetchedOpenRouterError: string | null = null;
+    if (
+      !response.ok &&
+      !controller.signal.aborted &&
+      (response.status === 400 || response.status === 422 || response.status === 413)
+    ) {
+      try {
+        prefetchedOpenRouterError = await response.text();
+      } catch {
+        prefetchedOpenRouterError = "";
+      }
+      if (isTokenLimitRejection(response.status, prefetchedOpenRouterError)) {
+        const { logger: svcLoggerRetry } = await import("../../lib/logger");
+        svcLoggerRetry.warn({ status: response.status }, "OpenRouter ceiling rejected, retrying uncapped once");
+        delete lastRequestBody.max_tokens;
+        response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": env.APP_ORIGIN,
+            "X-Title": "ChatUI",
+          },
+          body: JSON.stringify(lastRequestBody),
+          signal: controller.signal,
+        });
+        prefetchedOpenRouterError = null;
+      }
     }
     const { logger: svcLogger2 } = await import("../../lib/logger");
     svcLogger2.info({ status: response.status }, "OpenRouter response status");
     if (!response.ok || !response.body) {
-      const errorText = await response.text();
+      const errorText = prefetchedOpenRouterError ?? await response.text();
       svcLogger2.error({ errorText: errorText.slice(0, 2000) }, "OpenRouter error");
       await prisma.message.update({ where: { id: assistantMessageId }, data: { status: "ERROR", error: errorText } });
       sendEvent("error", { code: "OPENROUTER_ERROR", message: `OpenRouter error: ${errorText}` });
@@ -461,6 +505,8 @@ export const streamOpenRouterCompletion = async (
             if (assistantContent.length >= 300) kickFollowups(assistantContent);
             sendEvent("token", { delta });
           }
+          const fr = parsed.choices?.[0]?.finish_reason;
+          if (typeof fr === "string" && fr) stopReason = fr;
           // Thinking stream: forwarded live for the reasoning accordion —
           // deep-research turns ONLY. Web-search/normal turns never show
           // a reasoning process, even if the model emits thinking tokens.
@@ -581,6 +627,12 @@ export const streamOpenRouterCompletion = async (
       ] as unknown as OpenRouterMessage[];
     }
     const sources = [...sourceMap.values()];
+    // Limit-stop honesty: the provider ran out of output budget mid-answer.
+    // Name it inline so a severed sentence is never mistaken for complete.
+    if (stopReason === "length" && assistantContent) {
+      assistantContent += "\n\n…[cut off at the output limit — send “continue” for the rest]";
+      sendEvent("token", { delta: "\n\n…[cut off at the output limit — send “continue” for the rest]" });
+    }
     // Bottom links render from the persisted `sources` row (client plain
     // list) — no body footer, so URLs never appear twice. A model-written
     // trailing Sources section is still swapped for the canonical URL list

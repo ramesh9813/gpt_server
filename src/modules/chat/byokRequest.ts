@@ -172,6 +172,16 @@ export const hasMultimodalContent = (
 ): boolean =>
   messages.some((m) => Array.isArray(m.content));
 
+// Matches provider rejections of the output ceiling itself (small-context
+// models, strict gateways): 400s about max_tokens / context limits. Those
+// turns retry once WITHOUT any ceiling instead of failing.
+export const isTokenLimitRejection = (status: number, errorText: string): boolean => {
+  if (status !== 400 && status !== 422 && status !== 413) return false;
+  return /max_tokens|maximum context|context length|too many tokens|token limit|exceeds.*limit|model.*maximum|context.*(full|exceeded)|unsupported.*parameter/i.test(
+    errorText.slice(0, 1000)
+  );
+};
+
 // Matches provider rejections of array content (Groq "content must be a
 // string", generic invalid-content/image/vision/multimodal 400s).
 export const isVisionRejection = (status: number, errorText: string): boolean => {
@@ -206,7 +216,7 @@ export const stripImageParts = (
 export const buildByokStreamRequest = (
   byok: ByokRequest,
   messages: OpenRouterMessage[],
-  opts: { think?: boolean; artifact?: boolean; webSearch?: boolean } = {}
+  opts: { think?: boolean; artifact?: boolean; webSearch?: boolean; noCeiling?: boolean } = {}
 ): { url: string; headers: Record<string, string>; body: Record<string, unknown> } => {
   const { provider, model, apiKey } = byok;
   const allowReasoning = opts.think === true;
@@ -274,13 +284,12 @@ export const buildByokStreamRequest = (
     stream: true,
     // Artifact turns emit a full HTML document — provider defaults truncate
     // them mid-code, so set an explicit ceiling (other turns untouched).
-    ...(isArtifactTurn ? { max_tokens: TOKEN.ARTIFACT_MAX_TOKENS } : {}),
-    // Groq cuts responses short when max_tokens is omitted (provider-side
-    // default ceiling), so always send an explicit budget: thinking turns
-    // need headroom above the reasoning trace, plain turns get the default.
-    // Other OpenAI-compatible providers default to their model max — left
-    // untouched so strict gateways/small models never 400.
-    ...(provider.id === "groq" && !isArtifactTurn
+    ...(isArtifactTurn && opts.noCeiling !== true ? { max_tokens: TOKEN.ARTIFACT_MAX_TOKENS } : {}),
+    // Every OpenAI-compatible turn carries an explicit output budget:
+    // providers apply their own (sometimes tiny) default when max_tokens is
+    // omitted and cut answers mid-sentence. noCeiling is the escape hatch
+    // for the token-limit retry (small-context/strict models).
+    ...(!isArtifactTurn && opts.noCeiling !== true
       ? { max_tokens: allowReasoning ? TOKEN.BYOK_REASONING_MAX_TOKENS : TOKEN.BYOK_DEFAULT_MAX_TOKENS }
       : {}),
     // Web search via an OpenRouter BYOK key uses the same native tool as the
