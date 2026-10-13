@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 jest.mock("../src/lib/prisma", () => ({ prisma: {} }));
-import { buildHistoryMessages } from "../src/modules/chat/history";
+import { AUDIO_LISTEN_MARKER, buildHistoryMessages } from "../src/modules/chat/history";
 import { audioDataUrlOf, audioMissingBytes } from "../src/lib/fileAttachments";
 
 const audioRow = (id: string, content: string, dataUrl: string | null) => ({
@@ -32,6 +32,32 @@ describe("history native audio", () => {
     expect(audio?.input_audio?.data).toBe("AAA");
     expect(audio?.input_audio?.format).toBe("mp3");
     expect(stats.audioCount).toBe(1);
+  });
+
+  it("binds the listen-or-report marker to the audio turn text", () => {
+    const { messages } = buildHistoryMessages(
+      [audioRow("u1", "Listen carefully", "data:audio/mpeg;base64,AAA")],
+      {}
+    );
+    const user = messages.find((m) => m.role === "user");
+    const text = (Array.isArray(user?.content) ? user.content : []).find(
+      (p: { type?: string }) => p.type === "text"
+    ) as { text: string };
+    expect(text.text).toContain("Listen carefully");
+    expect(text.text).toContain(AUDIO_LISTEN_MARKER);
+    expect(text.text).toContain("[NO AUDIO RECEIVED]");
+  });
+
+  it("image-only turns carry no audio marker", () => {
+    const { messages } = buildHistoryMessages(
+      [{ id: "u1", role: "USER", content: "look", status: "COMPLETE", images: ["data:image/png;base64,AAA"] }],
+      {}
+    );
+    const user = messages.find((m) => m.role === "user");
+    const text = (Array.isArray(user?.content) ? user.content : []).find(
+      (p: { type?: string }) => p.type === "text"
+    ) as { text: string };
+    expect(text.text).not.toContain("[NO AUDIO RECEIVED]");
   });
 
   it("drops older audio, keeps only the latest turn's bytes", () => {

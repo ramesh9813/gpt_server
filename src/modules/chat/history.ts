@@ -67,6 +67,13 @@ const audioFormatOf = (dataUrl: string): string => {
   if (sub === "wav" || sub === "x-wav" || sub === "wave") return "wav";
   return sub.split("+")[0].split("-")[0] || "mp3";
 };
+
+// Every audio turn carries this in its text part: the model must evaluate
+// the attached bytes themselves — and say so EXACTLY if it hears nothing,
+// instead of inventing content. This is provider-agnostic: silent-drop
+// gateways surface as [NO AUDIO RECEIVED], real listeners answer truly.
+export const AUDIO_LISTEN_MARKER =
+  "[An audio clip is attached as native audio input. Base your answer ONLY on what you actually hear in it. If you receive no audible audio, reply with exactly: [NO AUDIO RECEIVED] and nothing else.]";
 const quizSummary = (quiz: unknown): string | null => {
   try {
     const q = typeof quiz === "string" ? JSON.parse(quiz) : quiz;
@@ -180,7 +187,10 @@ export const buildHistoryMessages = (
   if (head) messages.push({ role: "system", content: head });
   for (const it of kept) {
     if (it.role === "user" && (it.images.length > 0 || it.audio.length > 0)) {
-      const t = it.text.trim() ? it.text : "Describe the attached image(s) and audio in detail.";
+      const base = it.text.trim() ? it.text : "Describe the attached image(s) and audio in detail.";
+      // Marker rides WITH the audio so the model evaluates the bytes (or
+      // reports exactly that it hears nothing) — never invents content.
+      const t = it.audio.length > 0 ? `${base}\n${AUDIO_LISTEN_MARKER}` : base;
       messages.push({
         role: "user",
         content: [
