@@ -4,6 +4,7 @@ import { resolveEffectiveSystemPrompt, wantsArtifact } from "./artifact";
 import { mergePromptLists, mutedIdsFromRow, promptsFromRow } from "../../lib/tuning";
 import { logger } from "../../lib/logger";
 import { getStoredFiles, getStoredImages, redactForLog, resolveUserPromptForTurn, type OpenRouterMessage } from "./chatMappers";
+import { audioDataUrlOf } from "../../lib/fileAttachments";
 import { buildHistoryMessages, fetchHistoryRows } from "./history";
 import { parseByokHeadersAsync } from "../../lib/providers";
 import { streamByokCompletion } from "./byok";
@@ -64,7 +65,7 @@ export const handleStream = async (req: Request, res: Response) => {
     userFiles = getStoredFiles(existingMessage);
   } else if (userMessage || userImages.length > 0 || userFiles.length > 0) {
     const prompt = resolveUserPromptForTurn(userMessage, userFiles);
-    const filesMeta = userFiles.length > 0 ? userFiles.map((f) => ({ name: f.name, mime: f.mime, size: f.size })) : undefined;
+    const filesMeta = userFiles.length > 0 ? userFiles.map((f) => ({ name: f.name, mime: f.mime, size: f.size, ...(audioDataUrlOf(f) ? { dataUrl: audioDataUrlOf(f) } : {}) })) : undefined;
     const created = await prisma.message.create({
       data: { conversationId, role: "USER", content: prompt, images: userImages.length > 0 ? userImages : undefined, ...(filesMeta ? { files: filesMeta as any } : {}), status: "COMPLETE" } as any,
     });

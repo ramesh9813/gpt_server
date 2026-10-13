@@ -6,17 +6,18 @@ import { prisma } from "../../lib/prisma";
 
 export type OpenRouterTextPart = { type: "text"; text: string };
 export type OpenRouterImagePart = { type: "image_url"; image_url: { url: string } };
-export type OpenRouterContent = string | Array<OpenRouterTextPart | OpenRouterImagePart>;
+export type OpenRouterAudioPart = { type: "input_audio"; input_audio: { data: string; format: string } };
+export type OpenRouterContent = string | Array<OpenRouterTextPart | OpenRouterImagePart | OpenRouterAudioPart>;
 export type OpenRouterMessage = { role: "system" | "user" | "assistant"; content: OpenRouterContent };
-// Loose Prisma Message row — unknown fields ignored, quiz/images read defensively.
+// Loose Prisma Message row — unknown fields ignored, quiz/images/files read defensively.
 export type HistoryRow = {
   id?: unknown; role?: unknown; content?: unknown; images?: unknown;
-  videos?: unknown; quiz?: unknown; status?: unknown;
+  videos?: unknown; quiz?: unknown; status?: unknown; files?: unknown;
 };
 export type BuildHistoryOpts = {
   systemPrompt?: string; existingUserMessageId?: string; recentKeep?: number; charBudget?: number;
 };
-export type HistoryStats = { promptChars: number; imageCount: number; droppedImages: number; truncated: number };
+export type HistoryStats = { promptChars: number; imageCount: number; droppedImages: number; truncated: number; audioCount: number; droppedAudio: number };
 export const DEFAULT_RECENT_KEEP = HISTORY.DEFAULT_RECENT_KEEP;
 export const DEFAULT_CHAR_BUDGET = HISTORY.DEFAULT_CHAR_BUDGET;
 
@@ -39,10 +40,33 @@ const HEAD_LEN = HISTORY.HEAD_LEN;
 const TAIL_LEN = HISTORY.TAIL_LEN;
 const COMPACT_LEN = HISTORY.COMPACT_LEN;
 const ANCHOR_LEN = HISTORY.ANCHOR_LEN;
-type Item = { role: "system" | "user" | "assistant"; text: string; images: string[] };
+type Item = { role: "system" | "user" | "assistant"; text: string; images: string[]; audio: string[] };
 const strArr = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length > 0) : [];
 const storedImages = (v: unknown): string[] => strArr(v).filter((s) => s.startsWith("data:image/"));
+// Native audio payloads ride on files entries ({mime: audio/*, dataUrl}).
+// Only the latest audio-bearing turn keeps bytes (same rule as images).
+const storedAudio = (v: unknown): string[] => {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const e of v) {
+    if (!e || typeof e !== "object") continue;
+    const mime = (e as { mime?: unknown }).mime;
+    const dataUrl = (e as { dataUrl?: unknown }).dataUrl;
+    if (typeof mime === "string" && mime.startsWith("audio/") && typeof dataUrl === "string" && dataUrl.startsWith("data:audio/")) {
+      out.push(dataUrl);
+    }
+  }
+  return out;
+};
+// input_audio format from a data:audio/<sub>;base64 URL (mp3/wav native,
+// rest passed through — the provider answers exactly if it can't).
+const audioFormatOf = (dataUrl: string): string => {
+  const sub = (/^data:audio\/([^;,]+)/.exec(dataUrl)?.[1] ?? "").toLowerCase();
+  if (sub === "mpeg" || sub === "mp3") return "mp3";
+  if (sub === "wav" || sub === "x-wav" || sub === "wave") return "wav";
+  return sub.split("+")[0].split("-")[0] || "mp3";
+};
 const quizSummary = (quiz: unknown): string | null => {
   try {
     const q = typeof quiz === "string" ? JSON.parse(quiz) : quiz;
@@ -84,6 +108,7 @@ export const buildHistoryMessages = (
   const charBudget = opts.charBudget ?? DEFAULT_CHAR_BUDGET;
   let truncated = 0;
   let droppedImages = 0;
+  let droppedAudio = 0;
   const rows: HistoryRow[] = Array.isArray(history) ? (history as HistoryRow[]) : [];
   let sliced = rows;
   if (opts.existingUserMessageId) {
@@ -98,9 +123,10 @@ export const buildHistoryMessages = (
     const imgs = strArr(r?.images);
     const vids = strArr(r?.videos);
     const userImgs = role === "user" ? storedImages(r?.images) : [];
+    const userAudio = role === "user" ? storedAudio((r as { files?: unknown })?.files) : [];
     const qs = quizSummary(r?.quiz);
-    if (qs && !raw.trim()) { items.push({ role: "assistant", text: qs, images: [] }); continue; }
-    if (!raw.trim() && userImgs.length === 0 && imgs.length === 0 && vids.length === 0 && !qs) {
+    if (qs && !raw.trim()) { items.push({ role: "assistant", text: qs, images: [], audio: [] }); continue; }
+    if (!raw.trim() && userImgs.length === 0 && userAudio.length === 0 && imgs.length === 0 && vids.length === 0 && !qs) {
       if (status === "ERROR" || status === "STREAMING") continue;
     }
     if (role === "assistant" && (imgs.length > 0 || vids.length > 0)) {
@@ -108,10 +134,10 @@ export const buildHistoryMessages = (
       const parts: string[] = [];
       if (imgs.length > 0) parts.push(`[generated image for "${cap}"]`);
       if (vids.length > 0) parts.push("[generated video]");
-      items.push({ role, text: parts.join("\n"), images: [] });
+      items.push({ role, text: parts.join("\n"), images: [], audio: [] });
       continue;
     }
-    items.push({ role, text: raw, images: userImgs });
+    items.push({ role, text: raw, images: userImgs, audio: userAudio });
   }
   let lastImg = -1;
   items.forEach((it, i) => { if (it.images.length > 0) lastImg = i; });
@@ -122,7 +148,17 @@ export const buildHistoryMessages = (
       it.text += "\n[earlier attached image omitted]";
     }
   });
+  let lastAud = -1;
+  items.forEach((it, i) => { if (it.audio.length > 0) lastAud = i; });
+  items.forEach((it, i) => {
+    if (i !== lastAud && it.audio.length > 0) {
+      droppedAudio += it.audio.length;
+      it.audio = [];
+      it.text += "\n[earlier attached audio omitted]";
+    }
+  });
   const imageCount = lastImg >= 0 ? items[lastImg].images.length : 0;
+  const audioCount = lastAud >= 0 ? items[lastAud].audio.length : 0;
   for (const it of items) {
     const t = truncateLong(it.text);
     if (t !== it.text) { it.text = t; truncated++; }
@@ -143,11 +179,15 @@ export const buildHistoryMessages = (
   const head = (opts.systemPrompt || "").trim();
   if (head) messages.push({ role: "system", content: head });
   for (const it of kept) {
-    if (it.role === "user" && it.images.length > 0) {
-      const t = it.text.trim() ? it.text : "Describe the attached image(s) in detail.";
+    if (it.role === "user" && (it.images.length > 0 || it.audio.length > 0)) {
+      const t = it.text.trim() ? it.text : "Describe the attached image(s) and audio in detail.";
       messages.push({
         role: "user",
-        content: [{ type: "text", text: t }, ...it.images.map((url) => ({ type: "image_url" as const, image_url: { url } }))],
+        content: [
+          { type: "text", text: t },
+          ...it.images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+          ...it.audio.map((url) => ({ type: "input_audio" as const, input_audio: { data: url.split(",")[1] ?? url, format: audioFormatOf(url) } })),
+        ],
       });
     } else messages.push({ role: it.role, content: it.text });
   }
@@ -193,7 +233,7 @@ export const buildHistoryMessages = (
     promptChars = messages.reduce((n, m) => n + textLen(m), 0);
   }
   promptChars = messages.reduce((n, m) => n + textLen(m), 0);
-  return { messages, stats: { promptChars, imageCount, droppedImages, truncated } };
+  return { messages, stats: { promptChars, imageCount, droppedImages, truncated, audioCount, droppedAudio } };
 };
 
 // How many of the newest messages keep their full media payloads.

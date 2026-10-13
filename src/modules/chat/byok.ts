@@ -8,7 +8,7 @@ import type { ByokRequest } from "../../lib/byok";
 import { isFirewallChallengeBody } from "../../lib/byok";
 import { logger } from "../../lib/logger";
 import { generateByokFollowups, isFollowupsEnabled } from "./followups";
-import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isTokenLimitRejection, isVisionRejection, stripImageParts } from "./byokRequest";
+import { buildByokStreamRequest, byokErrorMessage, hasAudioContent, hasMultimodalContent, isTokenLimitRejection, isVisionRejection, stripImageParts } from "./byokRequest";
 import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
@@ -239,6 +239,11 @@ export const streamByokCompletion = async (
 
   try {
     const streamReq = buildByokStreamRequest(byok, searchMessages, { think, artifact, webSearch });
+    // Claude models accept no audio input at all: say so exactly, up front —
+    // never burn a call just to get the same 400 back.
+    if (provider.kind === "anthropic" && hasAudioContent(searchMessages)) {
+      return fail(400, "This model doesn't accept audio input — pick a model with audio understanding (e.g. Gemini) or send text instead.");
+    }
     // One request sender so a transient provider blip can be retried below.
     const doProviderFetch = (req = streamReq) => {
       // Combine client disconnect + hard timeout so a slow/malicious provider cannot hold the worker forever
@@ -331,6 +336,9 @@ export const streamByokCompletion = async (
       !response.ok &&
       provider.kind === "openai" &&
       hasMultimodalContent(searchMessages) &&
+      // Audio turns never downgrade silently: a model that rejects audio
+      // must surface its exact reason (unsupported / too large / failed).
+      !hasAudioContent(searchMessages) &&
       !controller.signal.aborted
     ) {
       let visionError = prefetchedError ?? "";

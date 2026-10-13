@@ -14,6 +14,9 @@ export const fileAttachmentSchema = z.object({
   mime: z.string().min(1).max(128),
   size: z.number().int().min(0).max(MAX_FILE_SIZE),
   content: z.string().min(1).max(MAX_FILES_TOTAL_CHARS + 4096),
+  // Base64 audio payload (audio/* only): forwarded to the model as native
+  // audio input, never inlined into text prompts. ~27MB cap ≈ 20MB file.
+  dataUrl: z.string().max(30_000_000).optional(),
 });
 
 export const fileAttachmentsSchema = z
@@ -55,6 +58,16 @@ export const combineFilesIntoPrompt = (
   const t = userText.trim();
   if (!t) return combined;
   return `${t}\n\n--- attached files ---\n${combined}`;
+};
+
+// Validated audio payload for model input: audio/* mime + data:audio/ URL
+// within cap. Anything else (wrong mime, oversized) yields null so oversized
+// or spoofed payloads never reach a provider — the meta note still goes.
+export const audioDataUrlOf = (f: { mime?: unknown; dataUrl?: unknown }): string | null => {
+  if (typeof f?.mime !== "string" || !f.mime.startsWith("audio/")) return null;
+  if (typeof f?.dataUrl !== "string" || !f.dataUrl.startsWith("data:audio/")) return null;
+  if (f.dataUrl.length > 30_000_000) return null;
+  return f.dataUrl;
 };
 
 export const summarizeFilesForHistory = (files: FileAttachment[]): string =>

@@ -5,6 +5,7 @@ import { validateBody } from "../../middleware/validate";
 import { resolveModelForRole, isImageOnlyModel, isVideoOnlyModel } from "../../lib/openrouter";
 import { resolveEffectiveSystemPrompt, wantsArtifact } from "./artifact";
 import { mergePromptLists, mutedIdsFromRow, promptsFromRow } from "../../lib/tuning";
+import { audioDataUrlOf } from "../../lib/fileAttachments";
 import { logger } from "../../lib/logger";
 import {
   getStoredFiles,
@@ -163,7 +164,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   } else if (userMessage || userImages.length > 0 || userFiles.length > 0) {
     const prompt = resolveUserPromptForTurn(userMessage, userFiles);
     const filesMeta = userFiles.length > 0
-      ? userFiles.map((f) => ({ name: f.name, mime: f.mime, size: f.size }))
+      ? userFiles.map((f) => ({ name: f.name, mime: f.mime, size: f.size, ...(audioDataUrlOf(f) ? { dataUrl: audioDataUrlOf(f) } : {}) }))
       : undefined;
     const createdUserMsg = await prisma.message.create({
       data: {

@@ -45,7 +45,8 @@ export type StreamRequestBody = z.infer<typeof streamSchema>;
 
 export type OpenRouterTextPart = { type: "text"; text: string };
 export type OpenRouterImagePart = { type: "image_url"; image_url: { url: string } };
-export type OpenRouterContent = string | Array<OpenRouterTextPart | OpenRouterImagePart>;
+export type OpenRouterAudioPart = { type: "input_audio"; input_audio: { data: string; format: string } };
+export type OpenRouterContent = string | Array<OpenRouterTextPart | OpenRouterImagePart | OpenRouterAudioPart>;
 export type OpenRouterMessage = { role: "system" | "user" | "assistant"; content: OpenRouterContent };
 
 export const mapRole = (role: string): OpenRouterMessage["role"] => {
@@ -89,10 +90,12 @@ export const redactForLog = (messages: OpenRouterMessage[]) =>
     if (typeof m.content === "string") return m;
     return {
       ...m,
-      content: (m.content as Array<OpenRouterTextPart | OpenRouterImagePart>).map((p) =>
+      content: (m.content as Array<OpenRouterTextPart | OpenRouterImagePart | OpenRouterAudioPart>).map((p) =>
         p.type === "image_url"
           ? { type: p.type, image_url: { url: `[omitted dataURL length=${p.image_url.url.length}]` } }
-          : p
+          : p.type === "input_audio"
+            ? { type: p.type, input_audio: { data: `[omitted audio length=${p.input_audio.data.length}]`, format: p.input_audio.format } }
+            : p
       ),
     };
   });

@@ -3,7 +3,7 @@
 // Gemini/Anthropic, missing thinking/web-search wiring, wrong auth headers.
 /// <reference types="jest" />
 import { BYOK_PROVIDERS, parseByokHeaders, type ByokProviderId } from "../src/lib/byok";
-import { buildByokStreamRequest, byokErrorMessage, hasMultimodalContent, isTokenLimitRejection, isVisionRejection, stripImageParts } from "../src/modules/chat/byokRequest";
+import { buildByokStreamRequest, byokErrorMessage, hasAudioContent, hasMultimodalContent, isTokenLimitRejection, isVisionRejection, stripImageParts } from "../src/modules/chat/byokRequest";
 import type { OpenRouterMessage } from "../src/modules/chat/chat.service";
 
 const MESSAGES: OpenRouterMessage[] = [
@@ -253,5 +253,44 @@ describe("vision fallback helpers", () => {
     expect(out[1].content).toContain("what is this?");
     expect(out[1].content).toContain("accepts text only");
     expect(Array.isArray(out[1].content)).toBe(false);
+  });
+});
+
+describe("native audio input", () => {
+  const audioTurn: OpenRouterMessage[] = [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "summarize this clip" },
+        { type: "input_audio", input_audio: { data: "AAA", format: "mp3" } },
+      ],
+    },
+  ];
+
+  it("detects audio parts", () => {
+    expect(hasAudioContent([{ role: "user", content: "hi" }])).toBe(false);
+    expect(hasAudioContent(audioTurn)).toBe(true);
+  });
+
+  it("gemini maps input_audio to inline audio bytes", () => {
+    const req = buildByokStreamRequest(mk("google"), audioTurn);
+    const parts = (req.body as any).contents[0].parts;
+    expect(parts).toContainEqual({ text: "summarize this clip" });
+    expect(parts).toContainEqual({ inline_data: { mime_type: "audio/mp3", data: "AAA" } });
+  });
+
+  it("openai-compatible keeps input_audio parts untouched", () => {
+    const req = buildByokStreamRequest(mk("openai"), audioTurn);
+    expect((req.body as any).messages[0].content).toContainEqual({
+      type: "input_audio",
+      input_audio: { data: "AAA", format: "mp3" },
+    });
+  });
+
+  it("text-only retry notes omitted audio separately from images", () => {
+    const out = stripImageParts(audioTurn);
+    expect(out[0].content).toContain("summarize this clip");
+    expect(out[0].content).toContain("[attached audio omitted");
+    expect(Array.isArray(out[0].content)).toBe(false);
   });
 });

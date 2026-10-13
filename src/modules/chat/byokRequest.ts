@@ -17,6 +17,15 @@ const dataUrlToInline = (url: string): GeminiPart | null => {
   return { inline_data: { mime_type: match[1], data: match[2] } };
 };
 
+// OpenAI input_audio → Gemini inline audio bytes (mime from the format;
+// the model itself rejects what it can't play, with its exact reason).
+const inputAudioToInline = (input: { data?: unknown; format?: unknown }): GeminiPart | null => {
+  if (typeof input?.data !== "string" || !input.data) return null;
+  const fmt = typeof input.format === "string" ? input.format.toLowerCase() : "";
+  const mime = fmt === "mp3" ? "audio/mp3" : fmt === "wav" ? "audio/wav" : fmt ? `audio/${fmt}` : "audio/mp3";
+  return { inline_data: { mime_type: mime, data: input.data } };
+};
+
 const toGeminiPayload = (messages: OpenRouterMessage[]) => {
   const sysParts: string[] = [];
   const contents: Array<{ role: "user" | "model"; parts: GeminiPart[] }> = [];
@@ -40,6 +49,9 @@ const toGeminiPayload = (messages: OpenRouterMessage[]) => {
       for (const p of m.content) {
         if (p.type === "text") {
           if (p.text.trim()) parts.push({ text: p.text });
+        } else if (p.type === "input_audio") {
+          const inline = inputAudioToInline(p.input_audio);
+          if (inline) parts.push(inline);
         } else {
           const inline = dataUrlToInline(p.image_url.url);
           if (inline) parts.push(inline);
@@ -88,6 +100,9 @@ const toAnthropicPayload = (messages: OpenRouterMessage[]) => {
         .map((p): AnthropicPart | null => {
           if (p.type === "text")
             return p.text.trim() ? { type: "text", text: p.text } : null;
+          // Claude takes no audio: dropped here, but audio turns fail fast
+          // with the exact reason before any request is built (see byok.ts).
+          if (p.type !== "image_url") return null;
           const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/.exec(
             p.image_url.url
           );
@@ -172,6 +187,18 @@ export const hasMultimodalContent = (
 ): boolean =>
   messages.some((m) => Array.isArray(m.content));
 
+// Native audio payload present (input_audio parts). Text-only models reject
+// the whole array content — those turns fail fast with the exact reason
+// instead of answering blind.
+export const hasAudioContent = (
+  messages: OpenRouterMessage[]
+): boolean =>
+  messages.some(
+    (m) =>
+      Array.isArray(m.content) &&
+      (m.content as Array<{ type?: unknown }>).some((p) => p?.type === "input_audio")
+  );
+
 // Matches provider rejections of the output ceiling itself (small-context
 // models, strict gateways): 400s about max_tokens / context limits. Those
 // turns retry once WITHOUT any ceiling instead of failing.
@@ -200,14 +227,19 @@ export const stripImageParts = (
     const texts = (m.content as Array<{ type: string; text?: string }>)
       .filter((p) => p?.type === "text" && typeof p.text === "string")
       .map((p) => (p as { text: string }).text);
-    const images = (m.content as unknown[]).length - texts.length;
+    const images = (m.content as unknown[]).filter(
+      (p) => (p as { type?: unknown })?.type === "image_url"
+    ).length;
+    const audios = (m.content as unknown[]).filter(
+      (p) => (p as { type?: unknown })?.type === "input_audio"
+    ).length;
     const text = texts.join("\n").trim() || "Describe the attached image(s) in detail.";
+    const notes: string[] = [];
+    if (images > 0) notes.push(`[attached image${images > 1 ? "s" : ""} omitted — this model accepts text only]`);
+    if (audios > 0) notes.push(`[attached audio omitted — this model accepts text only]`);
     return {
       ...m,
-      content:
-        images > 0
-          ? `${text}\n[attached image${images > 1 ? "s" : ""} omitted — this model accepts text only]`
-          : text,
+      content: notes.length > 0 ? `${text}\n${notes.join("\n")}` : text,
     };
   });
 
