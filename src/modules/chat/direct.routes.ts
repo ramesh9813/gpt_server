@@ -6,6 +6,7 @@ import { validateBody } from "../../middleware/validate";
 import { parseByokHeadersAsync } from "../../lib/providers";
 import { resolveEffectiveSystemPrompt } from "./artifact";
 import { mergePromptLists, mutedIdsFromRow, promptsFromRow } from "../../lib/tuning";
+import { audioMissingBytes } from "../../lib/fileAttachments";
 import { buildHistoryMessages, resolveHistoryBudget } from "./history";
 import { wantsMcq } from "./mcq";
 import { wantsImageGeneration, wantsVideo } from "./intents";
@@ -130,6 +131,22 @@ router.post(
         error: {
           code: "DIRECT_UNSUPPORTED",
           message: `Browser-direct streaming is not supported for ${byok.provider.name} yet.`,
+        },
+      });
+    }
+    // Audio with no listen-able bytes must fail loudly — answering from a
+    // bare meta note makes the model invent audio.
+    const missingAudio = audioMissingBytes(
+      (userMsg as { files?: Array<{ name?: unknown; mime?: unknown; dataUrl?: unknown }> }).files,
+      typeof userMsg.content === "string" ? userMsg.content : ""
+    );
+    if (missingAudio.length > 0) {
+      const names = missingAudio.slice(0, 2).join(", ");
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "AUDIO_BYTES_MISSING",
+          message: `Audio didn't arrive for listening (${names}${missingAudio.length > 2 ? "…" : ""}) — re-send the audio file so the model can hear it.`,
         },
       });
     }

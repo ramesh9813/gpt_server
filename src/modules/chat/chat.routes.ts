@@ -5,7 +5,7 @@ import { validateBody } from "../../middleware/validate";
 import { resolveModelForRole, isImageOnlyModel, isVideoOnlyModel } from "../../lib/openrouter";
 import { resolveEffectiveSystemPrompt, wantsArtifact } from "./artifact";
 import { mergePromptLists, mutedIdsFromRow, promptsFromRow } from "../../lib/tuning";
-import { audioDataUrlOf } from "../../lib/fileAttachments";
+import { audioDataUrlOf, audioMissingBytes } from "../../lib/fileAttachments";
 import { logger } from "../../lib/logger";
 import {
   getStoredFiles,
@@ -185,6 +185,19 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
 
   // Non-critical: derive title in background so it never delays TTFB.
   const trimmedTitle = userMsgContent.trim().replace(/\s+/g, " ");
+  // Audio with no listen-able bytes (stale client, dropped payload) must fail
+  // loudly here — answering from a bare meta note makes the model invent audio.
+  const missingAudio = audioMissingBytes(userFiles, userMsgContent);
+  if (missingAudio.length > 0) {
+    const names = missingAudio.slice(0, 2).join(", ");
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: "AUDIO_BYTES_MISSING",
+        message: `Audio didn't arrive for listening (${names}${missingAudio.length > 2 ? "…" : ""}) — re-send the audio file so the model can hear it.`,
+      },
+    });
+  }
   if (conversation.title === "New chat" && trimmedTitle.length > 0) {
     const derivedTitle = trimmedTitle.length > 60 ? `${trimmedTitle.slice(0, 57)}...` : trimmedTitle;
     prisma.conversation.update({ where: { id: conversationId }, data: { title: derivedTitle } }).catch(() => {});

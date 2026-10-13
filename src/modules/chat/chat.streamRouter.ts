@@ -4,7 +4,7 @@ import { resolveEffectiveSystemPrompt, wantsArtifact } from "./artifact";
 import { mergePromptLists, mutedIdsFromRow, promptsFromRow } from "../../lib/tuning";
 import { logger } from "../../lib/logger";
 import { getStoredFiles, getStoredImages, redactForLog, resolveUserPromptForTurn, type OpenRouterMessage } from "./chatMappers";
-import { audioDataUrlOf } from "../../lib/fileAttachments";
+import { audioDataUrlOf, audioMissingBytes } from "../../lib/fileAttachments";
 import { buildHistoryMessages, fetchHistoryRows } from "./history";
 import { parseByokHeadersAsync } from "../../lib/providers";
 import { streamByokCompletion } from "./byok";
@@ -74,6 +74,19 @@ export const handleStream = async (req: Request, res: Response) => {
   }
 
   const trimmedTitle = userMsgContent.trim().replace(/\s+/g, " ");
+  // Audio with no listen-able bytes (stale client, dropped payload) must fail
+  // loudly here — answering from a bare meta note makes the model invent audio.
+  const missingAudio = audioMissingBytes(userFiles, userMsgContent);
+  if (missingAudio.length > 0) {
+    const names = missingAudio.slice(0, 2).join(", ");
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: "AUDIO_BYTES_MISSING",
+        message: `Audio didn't arrive for listening (${names}${missingAudio.length > 2 ? "…" : ""}) — re-send the audio file so the model can hear it.`,
+      },
+    });
+  }
   if ((conversation as any).title === "New chat" && trimmedTitle.length > 0) {
     const derived = trimmedTitle.length > 60 ? `${trimmedTitle.slice(0, 57)}...` : trimmedTitle;
     prisma.conversation.update({ where: { id: conversationId }, data: { title: derived } }).catch(() => {});

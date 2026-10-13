@@ -70,5 +70,26 @@ export const audioDataUrlOf = (f: { mime?: unknown; dataUrl?: unknown }): string
   return f.dataUrl;
 };
 
+// Audio entries that need live bytes: no payload AND no legacy
+// "[transcribed audio" text in the prompt. Answering those from a bare meta
+// note makes the model hallucinate — callers fail loudly instead, naming
+// the files (user re-sends and the model truly listens).
+export const audioMissingBytes = (
+  files: Array<{ name?: unknown; mime?: unknown; dataUrl?: unknown }> | undefined,
+  promptText: string
+): string[] => {
+  if (!Array.isArray(files) || files.length === 0) return [];
+  if (typeof promptText === "string" && promptText.includes("[transcribed audio")) return [];
+  const out: string[] = [];
+  for (const f of files) {
+    const mime = (f as { mime?: unknown })?.mime;
+    const name = (f as { name?: unknown })?.name;
+    if (typeof mime === "string" && mime.startsWith("audio/") && typeof name === "string") {
+      if (audioDataUrlOf(f as { mime?: unknown; dataUrl?: unknown }) === null) out.push(name);
+    }
+  }
+  return out;
+};
+
 export const summarizeFilesForHistory = (files: FileAttachment[]): string =>
   files.map((f) => `[${fileLabel(f)}: ${f.name}]`).join(" ");
