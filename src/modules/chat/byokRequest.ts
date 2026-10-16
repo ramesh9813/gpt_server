@@ -278,7 +278,9 @@ export const buildByokStreamRequest = (
               ? 8192
               : 4096,
         stream: true,
-        ...(allowReasoning
+        // Deep research always enables the thinking trace: the reasoning
+        // layer is the fact-checking pass, on every provider.
+        ...(allowReasoning || isResearchTurn
           ? { thinking: { type: "enabled", budget_tokens: 2048 } }
           : {}),
         ...(system ? { system } : {}),
@@ -300,7 +302,9 @@ export const buildByokStreamRequest = (
         ...(allowReasoning || isArtifactTurn || isResearchTurn
           ? {
               generationConfig: {
-                ...(allowReasoning
+                // Deep research always includes thoughts: the reasoning
+                // layer is the fact-checking pass, on every provider.
+                ...(allowReasoning || isResearchTurn
                   ? { thinkingConfig: { includeThoughts: true } }
                   : {}),
                 // Gemini caps output lower — artifact/research share its own ceiling.

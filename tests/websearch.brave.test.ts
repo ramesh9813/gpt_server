@@ -339,11 +339,11 @@ describe("resolveSearchDepth", () => {
 });
 
 describe("researchSearchDepth", () => {
-  it("scales the user depth into the 20-60 research fan-out", () => {
-    expect(researchSearchDepth(5)).toBe(20);
+  it("scales the user depth into the 30-60 research fan-out", () => {
+    expect(researchSearchDepth(5)).toBe(30);
     expect(researchSearchDepth(10)).toBe(30);
     expect(researchSearchDepth(20)).toBe(60);
-    expect(researchSearchDepth(undefined)).toBe(20);
+    expect(researchSearchDepth(undefined)).toBe(30);
   });
 });
 

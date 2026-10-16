@@ -40,7 +40,9 @@ export const streamByokCompletion = async (
   const storedModel = `${provider.id}:${model}`;
   const startedAt = Date.now();
   // "Thinking" mode: only forward reasoning tokens when the user armed it.
-  const allowReasoning = think === true;
+  // Deep research always reasons: the trace is the fact-checking layer, on
+  // every provider, with no suitability check.
+  const allowReasoning = think === true || research === true;
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
