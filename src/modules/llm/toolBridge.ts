@@ -1,5 +1,6 @@
 import { prisma } from "../../lib/prisma";
 import { listCanvaTools, callCanvaTool, type McpToolDef } from "../connectors/canva/canvaMcp";
+import { DRIVE_TOOLS, callDriveTool, type DriveToolDef } from "../connectors/google/googleDrive";
 import { logger } from "../../lib/logger";
 
 // NOTE: this app's LLM is OpenRouter (OpenAI-compatible chat completions),
@@ -19,14 +20,12 @@ export type LlmToolCall = {
   arguments: Record<string, unknown>;
 };
 
-const PROVIDER_PREFIX = "canva__";
+const CANVA_PREFIX = "canva__";
+const DRIVE_PREFIX = "drive__";
 const MAX_TOOL_RESULT_CHARS = 8000;
 
 export const isConnectorToolName = (name: string): boolean =>
-  name.startsWith(PROVIDER_PREFIX);
-
-const toLlmName = (toolName: string): string => `${PROVIDER_PREFIX}${toolName}`;
-const fromLlmName = (llmName: string): string => llmName.slice(PROVIDER_PREFIX.length);
+  name.startsWith(CANVA_PREFIX) || name.startsWith(DRIVE_PREFIX);
 
 export const isCanvaConnected = async (userId: string): Promise<boolean> => {
   const row = await prisma.connectorToken.findUnique({
@@ -35,29 +34,54 @@ export const isCanvaConnected = async (userId: string): Promise<boolean> => {
   return !!row;
 };
 
-// MCP tools in OpenAI function-calling format. Returns [] (no behavior
-// change) when the user never linked Canva or listing fails.
+export const isGoogleConnected = async (userId: string): Promise<boolean> => {
+  const row = await prisma.connectorToken.findUnique({
+    where: { userId_provider: { userId, provider: "google" } },
+  });
+  return !!row;
+};
+
+type NamedToolDef = {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+};
+
+const toLlmTools = (prefix: string, label: string, tools: NamedToolDef[]): LlmToolDef[] =>
+  tools.map((t) => ({
+    type: "function" as const,
+    function: {
+      name: `${prefix}${t.name}`,
+      description: t.description ?? `${label} tool: ${t.name}`,
+      parameters:
+        t.inputSchema &&
+        typeof t.inputSchema === "object" &&
+        Object.keys(t.inputSchema).length > 0
+          ? (t.inputSchema as Record<string, unknown>)
+          : { type: "object", properties: {} },
+    },
+  }));
+
+// Connector tools in OpenAI function-calling format. Returns [] (no behavior
+// change) when the user linked nothing or listing fails.
 export const getAvailableTools = async (userId: string): Promise<LlmToolDef[]> => {
+  const out: LlmToolDef[] = [];
   try {
-    if (!(await isCanvaConnected(userId))) return [];
-    const tools = await listCanvaTools(userId);
-    return tools.map((t: McpToolDef) => ({
-      type: "function" as const,
-      function: {
-        name: toLlmName(t.name),
-        description: t.description ?? `Canva MCP tool: ${t.name}`,
-        parameters:
-          t.inputSchema &&
-          typeof t.inputSchema === "object" &&
-          Object.keys(t.inputSchema).length > 0
-            ? (t.inputSchema as Record<string, unknown>)
-            : { type: "object", properties: {} },
-      },
-    }));
+    if (await isCanvaConnected(userId)) {
+      const tools = await listCanvaTools(userId);
+      out.push(...toLlmTools(CANVA_PREFIX, "Canva MCP", tools as McpToolDef[]));
+    }
   } catch (err) {
     logger.warn({ err, userId }, "Canva tool listing failed; continuing without tools");
-    return [];
   }
+  try {
+    if (await isGoogleConnected(userId)) {
+      out.push(...toLlmTools(DRIVE_PREFIX, "Google Drive", DRIVE_TOOLS as DriveToolDef[]));
+    }
+  } catch (err) {
+    logger.warn({ err, userId }, "Drive tool listing failed; continuing without tools");
+  }
+  return out;
 };
 
 const contentToText = (result: unknown): string => {
@@ -85,20 +109,24 @@ const contentToText = (result: unknown): string => {
   return String(result ?? "");
 };
 
-// Executes one LLM-requested MCP tool call and returns plain text for the
-// conversation loop. Throws with code NOT_CONNECTED / UNKNOWN_TOOL /
+// Executes one LLM-requested connector tool call and returns plain text for
+// the conversation loop. Throws with code NOT_CONNECTED / UNKNOWN_TOOL /
 // INVALID_TOOL_ARGS for the caller to translate.
 export const executeMcpTool = async (
   userId: string,
   llmToolName: string,
   toolArgs: Record<string, unknown>
 ): Promise<string> => {
-  if (!isConnectorToolName(llmToolName)) {
+  let raw: unknown;
+  if (llmToolName.startsWith(DRIVE_PREFIX)) {
+    raw = await callDriveTool(userId, llmToolName.slice(DRIVE_PREFIX.length), toolArgs);
+  } else if (llmToolName.startsWith(CANVA_PREFIX)) {
+    raw = await callCanvaTool(userId, llmToolName.slice(CANVA_PREFIX.length), toolArgs);
+  } else {
     throw Object.assign(new Error(`Not a connector tool: ${llmToolName}`), {
       code: "NOT_CONNECTOR_TOOL",
     });
   }
-  const raw = await callCanvaTool(userId, fromLlmName(llmToolName), toolArgs);
   const text = contentToText(raw);
   return text.length > MAX_TOOL_RESULT_CHARS
     ? `${text.slice(0, MAX_TOOL_RESULT_CHARS)}\n…[truncated ${text.length - MAX_TOOL_RESULT_CHARS} chars]`

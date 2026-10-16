@@ -3,7 +3,7 @@ import { prisma } from "../../lib/prisma";
 import { env } from "../../lib/config";
 import { logger } from "../../lib/logger";
 
-export const CONNECTOR_PROVIDERS = ["canva"] as const;
+export const CONNECTOR_PROVIDERS = ["canva", "google"] as const;
 export type ConnectorProvider = (typeof CONNECTOR_PROVIDERS)[number];
 
 export const isConnectorProvider = (value: unknown): value is ConnectorProvider =>

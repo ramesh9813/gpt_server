@@ -88,6 +88,17 @@ const envSchema = z.object({
     .string()
     .default("design:content:read design:meta:read asset:read brandtemplate:meta:read profile:read folder:read"),
   CANVA_MCP_URL: httpsUrl("https://mcp.canva.com/mcp"),
+  // --- Google connector (Drive): register an OAuth client at
+  // https://console.cloud.google.com/ and mirror these in its settings ---
+  GOOGLE_CLIENT_ID: z.string().default(""),
+  GOOGLE_CLIENT_SECRET: z.string().default(""),
+  // Must exactly match an authorized redirect URI in the Google console.
+  GOOGLE_REDIRECT_URI: z.string().default(""),
+  // Space-separated. drive.readonly lets the assistant list/search/read the
+  // user's Drive files (least privilege for Drive content access).
+  GOOGLE_SCOPES: z
+    .string()
+    .default("https://www.googleapis.com/auth/drive.readonly"),
   // 64 hex chars (32 bytes) for AES-256-GCM token encryption at rest.
   CONNECTOR_ENCRYPTION_KEY: z.string().default(""),
 });
@@ -127,6 +138,13 @@ if (process.env.NODE_ENV === "production") {
     if (!env.CONNECTOR_ENCRYPTION_KEY || !/^[0-9a-fA-F]{64}$/.test(env.CONNECTOR_ENCRYPTION_KEY.trim())) {
       throw new Error(
         "FATAL: CONNECTOR_ENCRYPTION_KEY must be 64 hex chars when Canva connector is configured. Generate with: openssl rand -hex 32"
+      );
+    }
+  }
+  if (env.GOOGLE_CLIENT_ID || env.GOOGLE_CLIENT_SECRET || env.GOOGLE_REDIRECT_URI) {
+    if (!env.CONNECTOR_ENCRYPTION_KEY || !/^[0-9a-fA-F]{64}$/.test(env.CONNECTOR_ENCRYPTION_KEY.trim())) {
+      throw new Error(
+        "FATAL: CONNECTOR_ENCRYPTION_KEY must be 64 hex chars when Google connector is configured. Generate with: openssl rand -hex 32"
       );
     }
   }
