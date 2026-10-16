@@ -355,6 +355,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       think: think === true,
       artifact: isArtifactTurn,
       webSearch: webSearch === true,
+      research: research === true,
     });
   }
 

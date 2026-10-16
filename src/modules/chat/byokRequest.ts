@@ -248,11 +248,12 @@ export const stripImageParts = (
 export const buildByokStreamRequest = (
   byok: ByokRequest,
   messages: OpenRouterMessage[],
-  opts: { think?: boolean; artifact?: boolean; webSearch?: boolean; noCeiling?: boolean } = {}
+  opts: { think?: boolean; artifact?: boolean; webSearch?: boolean; noCeiling?: boolean; searchDepth?: number; research?: boolean } = {}
 ): { url: string; headers: Record<string, string>; body: Record<string, unknown> } => {
   const { provider, model, apiKey } = byok;
   const allowReasoning = opts.think === true;
   const isArtifactTurn = opts.artifact === true;
+  const isResearchTurn = opts.research === true;
 
   if (provider.kind === "anthropic") {
     const { system, messages: anthropicMessages } = toAnthropicPayload(messages);
@@ -267,12 +268,15 @@ export const buildByokStreamRequest = (
       body: {
         model,
         // Thinking mode needs headroom above the reasoning budget;
-        // artifact turns need room for the full HTML document.
+        // artifact turns need room for the full HTML document; deep-research
+        // reports run 2000-3000 words plus reasoning trace.
         max_tokens: isArtifactTurn
           ? TOKEN.ARTIFACT_MAX_TOKENS
-          : allowReasoning
-            ? 8192
-            : 4096,
+          : isResearchTurn
+            ? 16000
+            : allowReasoning
+              ? 8192
+              : 4096,
         stream: true,
         ...(allowReasoning
           ? { thinking: { type: "enabled", budget_tokens: 2048 } }
@@ -293,14 +297,14 @@ export const buildByokStreamRequest = (
       },
       body: {
         ...toGeminiPayload(messages),
-        ...(allowReasoning || isArtifactTurn
+        ...(allowReasoning || isArtifactTurn || isResearchTurn
           ? {
               generationConfig: {
                 ...(allowReasoning
                   ? { thinkingConfig: { includeThoughts: true } }
                   : {}),
-                // Gemini caps output lower — use its own artifact ceiling.
-                ...(isArtifactTurn
+                // Gemini caps output lower — artifact/research share its own ceiling.
+                ...(isArtifactTurn || isResearchTurn
                   ? { maxOutputTokens: TOKEN.ARTIFACT_MAX_TOKENS_GEMINI }
                   : {}),
               },
@@ -317,18 +321,21 @@ export const buildByokStreamRequest = (
     // Artifact turns emit a full HTML document — provider defaults truncate
     // them mid-code, so set an explicit ceiling (other turns untouched).
     ...(isArtifactTurn && opts.noCeiling !== true ? { max_tokens: TOKEN.ARTIFACT_MAX_TOKENS } : {}),
+    // Research reports run long on any model — same document-grade ceiling.
+    ...(isResearchTurn && !isArtifactTurn && opts.noCeiling !== true ? { max_tokens: 16000 } : {}),
     // Every OpenAI-compatible turn carries an explicit output budget:
     // providers apply their own (sometimes tiny) default when max_tokens is
     // omitted and cut answers mid-sentence. noCeiling is the escape hatch
     // for the token-limit retry (small-context/strict models).
-    ...(!isArtifactTurn && opts.noCeiling !== true
+    ...(!isArtifactTurn && !isResearchTurn && opts.noCeiling !== true
       ? { max_tokens: allowReasoning ? TOKEN.BYOK_REASONING_MAX_TOKENS : TOKEN.BYOK_DEFAULT_MAX_TOKENS }
       : {}),
     // Web search via an OpenRouter BYOK key uses the same native tool as the
-    // built-in path.
+    // built-in path — max_results follows the user's dynamic depth (5 when
+    // the caller didn't resolve one; this builder stays DB-free for tests).
     ...(opts.webSearch === true && provider.id === "openrouter"
       ? {
-          tools: [{ type: "openrouter:web_search", parameters: { engine: "auto", max_results: 5 } }],
+          tools: [{ type: "openrouter:web_search", parameters: { engine: "auto", max_results: opts.searchDepth ?? 5 } }],
           tool_choice: "auto",
         }
       : {}),

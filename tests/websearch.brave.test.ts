@@ -1,10 +1,11 @@
 // Brave search integration: intent detection + llm/context mapping.
 /// <reference types="jest" />
 import { env } from "../src/lib/config";
-import { enrichWithImages, extractOgImage, hasAttachedDocument, wantsWebSearch, wantsYouTubeSearch, youTubeVideoIdFromUrl } from "../src/lib/websearch";
+import { enrichWithImages, extractOgImage, hasAttachedDocument, stageLineForSource, wantsWebSearch, wantsSearchImages, wantsYouTubeSearch, youTubeVideoIdFromUrl } from "../src/lib/websearch";
 import { performWebSearch } from "../src/lib/websearch";
+import { performWebSearchWithProvider } from "../src/lib/websearch";
 import { ensureSingleSourcesSection } from "../src/lib/websearch";
-import { clampSearchDepth, isSearchProvider, providerOrder, resolveSearchDepth, resolveSearchProvider } from "../src/lib/searchSettings";
+import { clampSearchDepth, isSearchProvider, providerOrder, researchSearchDepth, resolveSearchDepth, resolveSearchProvider } from "../src/lib/searchSettings";
 import { prisma } from "../src/lib/prisma";
 
 jest.mock("../src/lib/prisma", () => ({
@@ -335,4 +336,99 @@ describe("resolveSearchDepth", () => {
     await expect(resolveSearchDepth("u")).resolves.toBe(5);
     await expect(resolveSearchDepth("")).resolves.toBe(5);
   });
+});
+
+describe("researchSearchDepth", () => {
+  it("scales the user depth into the 20-60 research fan-out", () => {
+    expect(researchSearchDepth(5)).toBe(20);
+    expect(researchSearchDepth(10)).toBe(30);
+    expect(researchSearchDepth(20)).toBe(60);
+    expect(researchSearchDepth(undefined)).toBe(20);
+  });
+});
+
+describe("stageLineForSource", () => {
+  it("shows the website URL plus content detail, not host and title", () => {
+    const line = stageLineForSource(0, 5, "Prime Minister of Nepal", "https://en.wikipedia.org/wiki/Prime_Minister_of_Nepal", "The prime minister leads the government of Nepal…");
+    expect(line).toContain("1/5 https://en.wikipedia.org/wiki/Prime_Minister_of_Nepal");
+    expect(line).toContain("The prime minister leads the government");
+  });
+
+  it("falls back to the title when no snippet is available", () => {
+    const line = stageLineForSource(2, 5, "Some Page", "https://example.com/a");
+    expect(line).toContain("3/5 https://example.com/a");
+    expect(line).toContain("Some Page");
+  });
+});
+
+describe("parallel fan-out", () => {
+  const OLD_BRAVE = env.BRAVE_API_KEY;
+  const OLD_EXA = (env as any).EXA_API_KEY;
+  const OLD_YT = (env as any).YOUTUBE_API_KEY;
+  afterEach(() => {
+    jest.restoreAllMocks();
+    (env as any).BRAVE_API_KEY = OLD_BRAVE;
+    (env as any).EXA_API_KEY = OLD_EXA;
+    (env as any).YOUTUBE_API_KEY = OLD_YT;
+  });
+
+  it("queries keyed providers at once, merges by priority with URL dedupe", async () => {
+    (env as any).BRAVE_API_KEY = "test-brave-key";
+    (env as any).EXA_API_KEY = "test-exa-key";
+    (env as any).YOUTUBE_API_KEY = "";
+    (global as any).fetch = jest.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("api.search.brave.com")) {
+        return {
+          ok: true,
+          json: async () => ({
+            grounding: {
+              generic: [
+                { url: "https://example.com/a", title: "A", snippets: ["a"] },
+                { url: "https://example.com/shared", title: "Shared Brave", snippets: ["s"] },
+              ],
+            },
+          }),
+        };
+      }
+      if (u.includes("api.exa.ai")) {
+        return {
+          ok: true,
+          json: async () => ({
+            results: [
+              { url: "https://example.com/shared", title: "Shared Exa", highlights: ["h"] },
+              { url: "https://example.com/c", title: "C", highlights: [] },
+            ],
+          }),
+        };
+      }
+      return { ok: false };
+    });
+    const { hits, provider } = await performWebSearchWithProvider("test query", 10, "auto");
+    const urls = hits.map((h) => h.url);
+    // Both providers were hit (parallel), shared URL kept once (Brave priority).
+    const called = ((global as any).fetch as jest.Mock).mock.calls.map((c: any[]) => String(c[0]));
+    expect(called.some((u: string) => u.includes("api.search.brave.com"))).toBe(true);
+    expect(called.some((u: string) => u.includes("api.exa.ai"))).toBe(true);
+    expect(urls).toEqual(["https://example.com/a", "https://example.com/shared", "https://example.com/c"]);
+    expect(hits.find((h) => h.url === "https://example.com/shared")?.title).toBe("Shared Brave");
+    expect(provider).toBe("brave");
+  });
+});
+
+describe("wantsSearchImages", () => {
+  it.each([
+    "show me photos of the new stadium",
+    "best wallpaper of mountains",
+    "what does it look like",
+    "send me pictures of cats",
+  ])("enriches %p", (q) => expect(wantsSearchImages(q)).toBe(true));
+
+  it.each([
+    "latest prime minister of nepal",
+    "current price of bitcoin",
+    "who won the match",
+    "write a poem about the sea",
+    "",
+  ])("stays imageless for %p", (q) => expect(wantsSearchImages(q)).toBe(false));
 });

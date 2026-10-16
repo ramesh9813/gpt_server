@@ -5,18 +5,20 @@ import { env } from "../../lib/config";
 import { generateFollowups, isFollowupsEnabled } from "./followups";
 import {
   getAvailableTools,
-  executeMcpTool,
+  getWebSearchToolDef,
+  executeToolCallsParallel,
+  MAX_PARALLEL_TOOL_CALLS,
   type LlmToolDef,
 } from "../llm/toolBridge";
 import { imageDataUrlSchema, MAX_IMAGES } from "../../lib/imageValidation";
 import { fileAttachmentsSchema } from "../../lib/fileAttachments";
 import { combineFilesIntoPrompt } from "../../lib/fileAttachments";
 import { TOKEN } from "../../lib/constants";
-import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../lib/websearch";
+import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages } from "../../lib/websearch";
 import { isTokenLimitRejection } from "./byokRequest";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
-import { resolveSearchDepth, resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
+import { SEARCH_DEPTH_DEFAULT, researchSearchDepth, resolveSearchDepth, resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
 
 export const streamSchema = z
   .object({
@@ -231,6 +233,10 @@ export const streamOpenRouterCompletion = async (
   // prompt AND pre-seeded into sourceMap so URLs land at the bottom even
   // when the model emits no url_citation annotations.
   let searchMessages = messages;
+  // Resolved once per turn, reused by pre-turn injection, the native
+  // web tool and the model-driven search tool — one dynamic depth for
+  // every provider (built-in or added), never a hardcoded count.
+  let searchDepth = SEARCH_DEPTH_DEFAULT;
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const rawQuery =
     typeof lastUser?.content === "string"
@@ -290,19 +296,24 @@ export const streamOpenRouterCompletion = async (
       { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${linked.block}` },
       ...messages,
     ];
-  } else if ((webSearch === true || (!hasDoc && wantsWebSearch(rawQuery))) && research !== true) {
+  } else if (webSearch === true || (!hasDoc && (wantsWebSearch(rawQuery) || research === true))) {
     const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
     if (query) {
       try {
         const searchProvider = await resolveSearchProvider((req as any).user?.id);
-        const searchDepth = await resolveSearchDepth((req as any).user?.id);
+        searchDepth = await resolveSearchDepth((req as any).user?.id);
+        // Deep research fans out wide (20-60 sites from the user's own depth)
+        // on the CURRENT model — no model suitability check, any model digs.
+        if (research === true) searchDepth = researchSearchDepth(searchDepth);
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
         const { hits: rawHits } = await performWebSearchWithProvider(query, searchDepth, searchProvider);
-        const hits = await enrichWithImages(rawHits);
+        // Photos only on image-intent turns — every other search stays a fast,
+        // imageless text path (no og:image fetches at all).
+        const hits = wantsSearchImages(query) ? await enrichWithImages(rawHits) : rawHits;
         hits.forEach((h, i) =>
-          sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url) })
+          sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url, h.snippet) })
         );
         const photoCount = hits.filter((h) => h.image).length;
         if (photoCount > 0) sendEvent("stage", { text: `Adding ${photoCount} photo${photoCount === 1 ? "" : "s"}…` });
@@ -357,11 +368,17 @@ export const streamOpenRouterCompletion = async (
       ? [
           {
             type: "openrouter:web_search",
-            parameters: { engine: "auto", max_results: 5 },
+            parameters: { engine: "auto", max_results: searchDepth },
           },
         ]
       : [];
     const toolsForTurn = await loadCanvaTools();
+    // Model-driven search: when the server did NOT pre-inject results for
+    // this turn, offer the model its own parallel web-search tool so it can
+    // pull fresh facts itself (including follow-up searches mid-turn).
+    // Pre-searched turns skip it — no duplicate provider spend.
+    const modelSearchTools =
+      research !== true && searchMessages === messages ? [getWebSearchToolDef()] : [];
     const requestBody: Record<string, unknown> = {
       model: selectedModel,
       messages: research
@@ -369,14 +386,15 @@ export const streamOpenRouterCompletion = async (
         : useWebTool
           ? [{ role: "system", content: WEB_SEARCH_SYSTEM_PROMPT }, ...turnMessages]
           : turnMessages,
-      ...(webTools.length > 0 || toolsForTurn.length > 0
-        ? { tools: [...webTools, ...toolsForTurn], tool_choice: "auto" }
+      ...(webTools.length > 0 || toolsForTurn.length > 0 || modelSearchTools.length > 0
+        ? { tools: [...webTools, ...toolsForTurn, ...modelSearchTools], tool_choice: "auto" }
         : {}),
       stream: true,
     };
     if (research) {
-      // Research reports are long; raise the ceiling when in research mode.
-      requestBody.max_tokens = 8000;
+      // Deep-research reports run 2000-3000 words plus reasoning trace —
+      // raise the ceiling well above the old 8000 so reports finish.
+      requestBody.max_tokens = 16000;
     }
     if (artifact) {
       // Artifact turns emit a full standalone HTML document — a provider
@@ -566,7 +584,7 @@ export const streamOpenRouterCompletion = async (
       const result = await runTurn(turnMessages);
       if (result.terminal) return;
       usage = result.usage ?? usage;
-      const requested = result.toolCalls.filter((c) => c.name);
+      const requested = result.toolCalls.filter((c) => c.name).slice(0, MAX_PARALLEL_TOOL_CALLS);
       const toolsResolved = await loadCanvaTools();
       if (toolsResolved.length === 0 || requested.length === 0 || turn >= 1 || !canvaUserId) {
         break;
@@ -575,25 +593,9 @@ export const streamOpenRouterCompletion = async (
       // Live phase for the client status line; unknown to older clients,
       // which safely ignore unrecognized SSE event types.
       sendEvent("tools", { names: requested.map((c) => c.name) });
-      const toolResults: Array<{ id: string; text: string }> = [];
-      for (const tc of requested) {
-        let parsedArgs: Record<string, unknown> = {};
-        try {
-          const raw = tc.arguments.trim() ? JSON.parse(tc.arguments) : {};
-          parsedArgs = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-        } catch {
-          toolResults.push({
-            id: tc.id,
-            text: "Error: the model produced invalid JSON arguments and they were rejected.",
-          });
-          continue;
-        }
-        try {
-          toolResults.push({ id: tc.id, text: await executeMcpTool(uid, tc.name, parsedArgs) });
-        } catch (err: any) {
-          toolResults.push({ id: tc.id, text: `Error: ${err?.message || "tool execution failed"}` });
-        }
-      }
+      // Parallel subagents: every call the model fanned out this turn runs
+      // concurrently — wall-clock is the slowest tool, not the sum.
+      const toolResults = await executeToolCallsParallel(uid, requested);
       if (controller.signal.aborted) {
         await prisma.message.update({
           where: { id: assistantMessageId },

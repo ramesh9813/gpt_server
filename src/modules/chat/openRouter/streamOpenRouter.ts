@@ -5,14 +5,14 @@ import { logger } from "../../../lib/logger";
 import { TOKEN } from "../../../lib/constants";
 import { generateFollowups, isFollowupsEnabled } from "../followups";
 import { isTokenLimitRejection } from "../byokRequest";
-import { getAvailableTools, executeMcpTool, type LlmToolDef } from "../../llm/toolBridge";
+import { getAvailableTools, getWebSearchToolDef, executeToolCallsParallel, MAX_PARALLEL_TOOL_CALLS, type LlmToolDef } from "../../llm/toolBridge";
 import { RESEARCH_SYSTEM_PROMPT, WEB_SEARCH_SYSTEM_PROMPT } from "../chatPrompts";
 import { redactForLog, type OpenRouterMessage } from "../chatMappers";
-import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../../lib/websearch";
+import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages } from "../../../lib/websearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../../lib/youtubeTranscript";
 import { fetchLinkedPages } from "../../../lib/pageContent";
-import { resolveSearchDepth, resolveSearchProvider, searchProviderLabel } from "../../../lib/searchSettings";
+import { SEARCH_DEPTH_DEFAULT, researchSearchDepth, resolveSearchDepth, resolveSearchProvider, searchProviderLabel } from "../../../lib/searchSettings";
 
 type PendingToolCall = { id: string; name: string; arguments: string };
 
@@ -120,6 +120,10 @@ export const streamOpenRouterCompletion = async (
   // when the model emits no url_citation annotations. Stage events narrate
   // the wait above the typing dots (2–3 short lines).
   let searchMessages = messages;
+  // Resolved once per turn, reused by pre-turn injection, the native
+  // web tool and the model-driven search tool — one dynamic depth for
+  // every provider (built-in or added), never a hardcoded count.
+  let searchDepth = SEARCH_DEPTH_DEFAULT;
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const rawQuery =
     typeof lastUser?.content === "string"
@@ -179,19 +183,24 @@ export const streamOpenRouterCompletion = async (
       { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${linked.block}` },
       ...messages,
     ];
-  } else if ((webSearch === true || (!hasDoc && wantsWebSearch(rawQuery))) && research !== true) {
+  } else if (webSearch === true || (!hasDoc && (wantsWebSearch(rawQuery) || research === true))) {
     const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
     if (query) {
       try {
         const searchProvider = await resolveSearchProvider((req as any).user?.id);
-        const searchDepth = await resolveSearchDepth((req as any).user?.id);
+        searchDepth = await resolveSearchDepth((req as any).user?.id);
+        // Deep research fans out wide (20-60 sites from the user's own depth)
+        // on the CURRENT model — no model suitability check, any model digs.
+        if (research === true) searchDepth = researchSearchDepth(searchDepth);
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
         const { hits: rawHits } = await performWebSearchWithProvider(query, searchDepth, searchProvider);
-        const hits = await enrichWithImages(rawHits);
+        // Photos only on image-intent turns — every other search stays a fast,
+        // imageless text path (no og:image fetches at all).
+        const hits = wantsSearchImages(query) ? await enrichWithImages(rawHits) : rawHits;
         hits.forEach((h, i) =>
-          sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url) })
+          sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url, h.snippet) })
         );
         const photoCount = hits.filter((h) => h.image).length;
         if (photoCount > 0) sendEvent("stage", { text: `Adding ${photoCount} photo${photoCount === 1 ? "" : "s"}…` });
@@ -236,17 +245,24 @@ export const streamOpenRouterCompletion = async (
   const runTurn = async (turnMessages: OpenRouterMessage[]): Promise<{ usage: any; toolCalls: PendingToolCall[]; terminal: boolean }> => {
     const pending: PendingToolCall[] = [];
     const useWebTool = webSearch === true && research !== true;
-    const webTools = useWebTool ? [{ type: "openrouter:web_search", parameters: { engine: "auto", max_results: 5 } }] : [];
+    const webTools = useWebTool ? [{ type: "openrouter:web_search", parameters: { engine: "auto", max_results: searchDepth } }] : [];
     const toolsForTurn = await loadCanvaTools();
+    // Model-driven search: when the server did NOT pre-inject results for
+    // this turn, offer the model its own parallel web-search tool so it can
+    // pull fresh facts itself (including follow-up searches mid-turn).
+    // Pre-searched turns skip it — no duplicate provider spend.
+    const modelSearchTools =
+      research !== true && searchMessages === messages ? [getWebSearchToolDef()] : [];
     const requestBody: Record<string, unknown> = {
       model: selectedModel,
       messages: research
         ? [{ role: "system", content: RESEARCH_SYSTEM_PROMPT }, ...turnMessages]
         : useWebTool ? [{ role: "system", content: WEB_SEARCH_SYSTEM_PROMPT }, ...turnMessages] : turnMessages,
-      ...(webTools.length > 0 || toolsForTurn.length > 0 ? { tools: [...webTools, ...toolsForTurn], tool_choice: "auto" } : {}),
+      ...(webTools.length > 0 || toolsForTurn.length > 0 || modelSearchTools.length > 0 ? { tools: [...webTools, ...toolsForTurn, ...modelSearchTools], tool_choice: "auto" } : {}),
       stream: true,
     };
-    if (research) requestBody.max_tokens = 8000;
+    // Deep-research reports run 2000-3000 words plus reasoning trace.
+    if (research) requestBody.max_tokens = 16000;
     if (artifact) requestBody.max_tokens = TOKEN.ARTIFACT_MAX_TOKENS;
     if (!research && !artifact) {
       // Normal turns: provider defaults can cut answers short — always send
@@ -367,24 +383,14 @@ export const streamOpenRouterCompletion = async (
       const result = await runTurn(turnMessages);
       if (result.terminal) return;
       usage = result.usage ?? usage;
-      const requested = result.toolCalls.filter((c) => c.name);
+      const requested = result.toolCalls.filter((c) => c.name).slice(0, MAX_PARALLEL_TOOL_CALLS);
       const toolsResolved = await loadCanvaTools();
       if (toolsResolved.length === 0 || requested.length === 0 || turn >= 1 || !canvaUserId) break;
       const uid = canvaUserId;
       sendEvent("tools", { names: requested.map((c) => c.name) });
-      const toolResults: Array<{ id: string; text: string }> = [];
-      for (const tc of requested) {
-        let parsedArgs: Record<string, unknown> = {};
-        try {
-          const raw = tc.arguments.trim() ? JSON.parse(tc.arguments) : {};
-          parsedArgs = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-        } catch {
-          toolResults.push({ id: tc.id, text: "Error: the model produced invalid JSON arguments and they were rejected." });
-          continue;
-        }
-        try { toolResults.push({ id: tc.id, text: await executeMcpTool(uid, tc.name, parsedArgs) }); }
-        catch (err: any) { toolResults.push({ id: tc.id, text: `Error: ${err?.message || "tool execution failed"}` }); }
-      }
+      // Parallel subagents: every call the model fanned out this turn runs
+      // concurrently — wall-clock is the slowest tool, not the sum.
+      const toolResults = await executeToolCallsParallel(uid, requested);
       if (controller.signal.aborted) {
         await prisma.message.update({ where: { id: assistantMessageId }, data: { content: assistantContent, reasoning: allowReasoning ? assistantReasoning || null : null, status: "COMPLETE", model: selectedModel, durationMs: Date.now() - startedAt } });
         await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });

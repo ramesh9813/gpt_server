@@ -12,10 +12,11 @@ import { buildByokStreamRequest, byokErrorMessage, hasAudioContent, hasMultimoda
 import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
-import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch } from "../../lib/websearch";
+import { RESEARCH_SYSTEM_PROMPT } from "./chatPrompts";
+import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages } from "../../lib/websearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
-import { resolveSearchDepth, resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
+import { SEARCH_DEPTH_DEFAULT, researchSearchDepth, resolveSearchDepth, resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
 
 // ---- entry point ------------------------------------------------------------
 
@@ -31,9 +32,10 @@ export const streamByokCompletion = async (
     think?: boolean;
     artifact?: boolean;
     webSearch?: boolean;
+    research?: boolean;
   }
 ) => {
-  const { assistantMessageId, conversationId, messages, byok, userMessageId, think, artifact, webSearch } = opts;
+  const { assistantMessageId, conversationId, messages, byok, userMessageId, think, artifact, webSearch, research } = opts;
   const { provider, model, apiKey } = byok;
   const storedModel = `${provider.id}:${model}`;
   const startedAt = Date.now();
@@ -77,6 +79,15 @@ export const streamByokCompletion = async (
   // results + bottom URL list. No native tool required. Runs on the toggle
   // OR automatically when the prompt carries a search/news/recency intent.
   let searchMessages = messages;
+  // Deep research runs on the CURRENT model — no model switch. Prepend the
+  // research brief so any provider digs with the same directive.
+  if (research === true) {
+    searchMessages = [{ role: "system", content: RESEARCH_SYSTEM_PROMPT }, ...messages];
+  }
+  // Resolved once per turn, reused by pre-turn injection, the native
+  // web tool and the model-driven search tool — one dynamic depth for
+  // every provider (built-in or added), never a hardcoded count.
+  let searchDepth = SEARCH_DEPTH_DEFAULT;
   const sourceMap = new Map<string, { title: string; url: string; image?: string }>();
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const rawQuery =
@@ -137,19 +148,24 @@ export const streamByokCompletion = async (
       { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${linked.block}` },
       ...messages,
     ];
-  } else if (webSearch === true || (!hasDoc && wantsWebSearch(rawQuery))) {
+  } else if (webSearch === true || (!hasDoc && (wantsWebSearch(rawQuery) || research === true))) {
     const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
     if (query) {
       try {
         const searchProvider = await resolveSearchProvider((req as any).user?.id);
-        const searchDepth = await resolveSearchDepth((req as any).user?.id);
+        searchDepth = await resolveSearchDepth((req as any).user?.id);
+        // Deep research fans out wide (20-60 sites from the user's own depth)
+        // on the CURRENT model — no model suitability check, any model digs.
+        if (research === true) searchDepth = researchSearchDepth(searchDepth);
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
         const { hits: rawHits } = await performWebSearchWithProvider(query, searchDepth, searchProvider);
-        const hits = await enrichWithImages(rawHits);
+        // Photos only on image-intent turns — every other search stays a fast,
+        // imageless text path (no og:image fetches at all).
+        const hits = wantsSearchImages(query) ? await enrichWithImages(rawHits) : rawHits;
         hits.forEach((h, i) =>
-          sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url) })
+          sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url, h.snippet) })
         );
         const photoCount = hits.filter((h) => h.image).length;
         if (photoCount > 0) sendEvent("stage", { text: `Adding ${photoCount} photo${photoCount === 1 ? "" : "s"}…` });
@@ -239,7 +255,7 @@ export const streamByokCompletion = async (
   };
 
   try {
-    const streamReq = buildByokStreamRequest(byok, searchMessages, { think, artifact, webSearch });
+    const streamReq = buildByokStreamRequest(byok, searchMessages, { think, artifact, webSearch, research, searchDepth });
     // Claude models accept no audio input at all: say so exactly, up front —
     // never burn a call just to get the same 400 back.
     if (provider.kind === "anthropic" && hasAudioContent(searchMessages)) {
@@ -317,6 +333,8 @@ export const streamByokCompletion = async (
           artifact,
           webSearch,
           noCeiling: true,
+          research,
+          searchDepth,
         });
         if (!controller.signal.aborted) {
           response = await doProviderFetch(uncappedReq);
@@ -358,6 +376,8 @@ export const streamByokCompletion = async (
           think,
           artifact,
           webSearch,
+          research,
+          searchDepth,
         });
         if (!controller.signal.aborted) {
           response = await doProviderFetch(textReq);

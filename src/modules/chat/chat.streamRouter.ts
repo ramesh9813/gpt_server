@@ -131,7 +131,7 @@ export const handleStream = async (req: Request, res: Response) => {
     if (wantsMcqFor(userMsgContent)) return handleMcq(userMsgContent, byok);
     const { messages, stats } = buildHistoryMessages(history, { systemPrompt: mergedSystemPrompt, existingUserMessageId: streamUserMessageId });
     logger.info({ provider: byok.provider.name, model: byok.model, messages: redactForLog(messages as OpenRouterMessage[]), stats, think: think === true }, "Sending BYOK messages");
-    return streamByokCompletion(req, res, { assistantMessageId: assistantMsg.id, conversationId, messages: messages as OpenRouterMessage[], byok, userMessageId: streamUserMessageId, think: think === true, artifact: isArtifactTurn, webSearch: webSearch === true });
+    return streamByokCompletion(req, res, { assistantMessageId: assistantMsg.id, conversationId, messages: messages as OpenRouterMessage[], byok, userMessageId: streamUserMessageId, think: think === true, artifact: isArtifactTurn, webSearch: webSearch === true, research: research === true });
   }
 
   if (wantsMcqFor(userMsgContent)) return handleMcq(userMsgContent);

@@ -67,3 +67,14 @@ export const resolveSearchDepth = async (userId: string): Promise<number> => {
     return SEARCH_DEPTH_DEFAULT;
   }
 };
+
+// Deep-research fan-out: 20-60 websites scaled from the user's own depth
+// (depth 5 → 20, 10 → 30, 20 → 60). No model suitability check — any model
+// researches with whatever the fan-out finds.
+export const RESEARCH_DEPTH_MIN = 20;
+export const RESEARCH_DEPTH_MAX = 60;
+
+export const researchSearchDepth = (baseDepth: unknown): number => {
+  const base = clampSearchDepth(baseDepth);
+  return Math.min(RESEARCH_DEPTH_MAX, Math.max(RESEARCH_DEPTH_MIN, base * 3));
+};
