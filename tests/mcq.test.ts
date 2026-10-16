@@ -1,6 +1,8 @@
+/// <reference types="jest" />
+jest.mock("../src/lib/prisma", () => ({ prisma: {} }));
 // MCQ quiz helpers: answer spread must hold no matter how the model
 // clusters correct positions, and malformed rows pass through untouched.
-import { hashQuestion, parseMcqCount, spreadAnswerPositions, type McqQuestion } from "../src/modules/chat/mcq";
+import { extractCompleteMcqQuestions, hashQuestion, parseMcqCount, spreadAnswerPositions, type McqQuestion } from "../src/modules/chat/mcq";
 
 const clustered = (n: number): McqQuestion[] =>
   Array.from({ length: n }, (_, i) => ({
@@ -41,10 +43,49 @@ describe("parseMcqCount", () => {
   it("parses leading and inline counts", () => {
     expect(parseMcqCount("15 photosynthesis")).toMatchObject({ count: 15 });
     expect(parseMcqCount("solar system 5 questions")).toMatchObject({ count: 5 });
-    expect(parseMcqCount("World War 2")).toMatchObject({ count: 2 });
+    // Trailing "2" is part of the topic, not a count — default applies.
+    expect(parseMcqCount("World War 2")).toMatchObject({ count: 10, cleanTopic: "World War 2" });
   });
 
   it("hashes questions case-insensitively", () => {
     expect(hashQuestion("What is X?")).toBe(hashQuestion("what is x"));
+  });
+});
+
+describe("extractCompleteMcqQuestions", () => {
+  const q1 = `{"question":"Capital of France?","options":["Paris","Rome","Berlin","Madrid"],"answerIndex":0,"explanation":"Paris"}`;
+  const q2 = `{"question":"2+2?","options":["3","4","5","6"],"answerIndex":1}`;
+  const full = `{"questions":[${q1},${q2}]}`;
+
+  it("extracts every complete question from a finished buffer", () => {
+    const out = extractCompleteMcqQuestions(full);
+    expect(out).toHaveLength(2);
+    expect(out[0].question).toBe("Capital of France?");
+    expect(out[1].answerIndex).toBe(1);
+  });
+
+  it("yields only finished questions from a partial buffer", () => {
+    const partial = `{"questions":[${q1},${q2.slice(0, 20)}`;
+    const out = extractCompleteMcqQuestions(partial);
+    expect(out).toHaveLength(1);
+    expect(out[0].question).toBe("Capital of France?");
+  });
+
+  it("returns nothing mid-first-question, everything once it closes", () => {
+    const cut = q1.slice(0, 30);
+    expect(extractCompleteMcqQuestions(`{"questions":[${cut}`)).toHaveLength(0);
+    expect(extractCompleteMcqQuestions(`{"questions":[${q1}`)).toHaveLength(1);
+  });
+
+  it("skips invalid objects and tolerates fences", () => {
+    const bad = `{"foo":"bar"}`;
+    expect(extractCompleteMcqQuestions(`\`\`\`json\n{"questions":[${bad},${q1}]}\n\`\`\``)).toHaveLength(1);
+  });
+
+  it("handles braces inside strings", () => {
+    const tricky = `{"question":"Which set is {a, b}?","options":["{a}","{b}","{a, b}","none"],"answerIndex":2}`;
+    const out = extractCompleteMcqQuestions(`{"questions":[${tricky}]}`);
+    expect(out).toHaveLength(1);
+    expect(out[0].answerIndex).toBe(2);
   });
 });

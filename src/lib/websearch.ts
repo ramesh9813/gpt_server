@@ -115,6 +115,18 @@ const ATTACHED_DOC_RE = /\[(pdf|file|audio file|video file):|\[transcribed audio
 export const hasAttachedDocument = (text: string): boolean =>
   ATTACHED_DOC_RE.test(text || "");
 
+// Image intent: only these turns get photo enrichment (og:image fetches +
+// thumbnails). Every other search skips enrichment entirely — faster and
+// imageless, as requested.
+const SEARCH_IMAGE_RE =
+  /\b(pics?|photos?|images?|pictures?|wallpapers?|posters?|galler(y|ies)|thumbnails?|logos?|icons?|selfies?|portraits?|looks?\s+like)\b/i;
+
+export const wantsSearchImages = (text: string): boolean => {
+  const t = (text || "").slice(0, 500);
+  if (!t.trim()) return false;
+  return SEARCH_IMAGE_RE.test(t);
+};
+
 // Video intent: "watch …", "trailer", "song", "vlog" and friends route to
 // YouTube (auto mode) instead of web search. "Video of …" counts only
 // without a generation verb — "generate a video of …" stays a creation
@@ -238,22 +250,50 @@ export const performWebSearchWithProvider = async (
         : provider === "auto" || (provider !== "brave" && provider !== "exa" && provider !== "duckduckgo")
           ? ["brave", "exa", "duckduckgo"]
           : [provider, ...base];
+  // Parallel fan-out: every viable provider is queried AT ONCE (wall-clock
+  // is the slowest provider, not the sum), then merged in priority order
+  // with URL dedupe. Missing keys simply sit out.
+  type ProviderName = "brave" | "exa" | "youtube" | "duckduckgo";
+  const tasks: Array<{ name: ProviderName; run: () => Promise<WebResult[]> }> = [];
   for (const p of order) {
     if (p === "youtube" && env.YOUTUBE_API_KEY?.trim()) {
-      const yt = await performYouTubeSearch(q, max);
-      if (yt.length > 0) return { hits: yt, provider: p };
+      tasks.push({ name: p, run: () => performYouTubeSearch(q, max) });
     } else if (p === "brave" && env.BRAVE_API_KEY?.trim()) {
-      const brave = await performBraveSearch(q, max);
-      if (brave.length > 0) return { hits: brave, provider: p };
+      tasks.push({ name: p, run: () => performBraveSearch(q, max) });
     } else if (p === "exa" && env.EXA_API_KEY?.trim()) {
-      const exa = await performExaSearch(q, max);
-      if (exa.length > 0) return { hits: exa, provider: p };
+      tasks.push({ name: p, run: () => performExaSearch(q, max) });
     } else if (p === "duckduckgo") {
-      const ddg = await performDuckDuckGo(q, max);
-      if (ddg.length > 0) return { hits: ddg, provider: p };
+      tasks.push({ name: p, run: () => performDuckDuckGo(q, max) });
     }
   }
-  return { hits: [], provider: "none" };
+  const settled = await Promise.allSettled(tasks.map((t) => t.run()));
+  const normUrl = (u: string): string => {
+    try {
+      const parsed = new URL(u);
+      return `${parsed.hostname.replace(/^www\./, "").toLowerCase()}${parsed.pathname.replace(/\/+$/, "").toLowerCase()}${parsed.search.toLowerCase()}`;
+    } catch {
+      return u.trim().toLowerCase().replace(/\/+$/, "");
+    }
+  };
+  const seen = new Set<string>();
+  const byProvider = new Map<ProviderName, WebResult[]>();
+  tasks.forEach((t, i) => {
+    const r = settled[i];
+    byProvider.set(t.name, r.status === "fulfilled" && Array.isArray(r.value) ? r.value : []);
+  });
+  const merged: WebResult[] = [];
+  for (const p of order) {
+    for (const h of byProvider.get(p) ?? []) {
+      if (merged.length >= max) break;
+      const key = normUrl(h.url);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(h);
+    }
+    if (merged.length >= max) break;
+  }
+  const winner = order.find((p) => (byProvider.get(p) ?? []).length > 0);
+  return { hits: merged, provider: winner ?? "none" };
 };
 
 export const performWebSearch = async (
@@ -433,15 +473,11 @@ export const buildSearchContextBlock = (query: string, results: WebResult[]): st
 // One scrolling line per source: "2/5 kathmandupost.com — Title…".
 // The client keeps the last 3 stage lines, so sources auto-scroll past one
 // after another as they arrive instead of a single "Reading N sources" line.
-export const stageLineForSource = (index: number, total: number, title: string, url: string): string => {
-  let host = url;
-  try {
-    host = new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    // keep raw url
-  }
-  const t = (title || "").trim().slice(0, 48);
-  return `${index + 1}/${total} ${host}${t ? ` — ${t}` : ""}…`;
+export const stageLineForSource = (index: number, total: number, title: string, url: string, snippet = ""): string => {
+  // Live stage lines show the website URL plus its content detail (snippet),
+  // not just host + title — the user watches what each source actually says.
+  const detail = (snippet || title || "").replace(/\s+/g, " ").trim().slice(0, 140);
+  return `${index + 1}/${total} ${url}${detail ? ` — ${detail}` : ""}…`;
 };
 // Footer guarantees the searched-page URLs sit at the bottom of the bubble
 // even when the model omits them — client Sources panel + persisted row use

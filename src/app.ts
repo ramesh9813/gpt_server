@@ -144,7 +144,16 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/api/health", (_req, res) => {
-  res.json({ success: true, data: { status: "ok" } });
+  // Deploy marker: Render sets RENDER_GIT_COMMIT automatically, so anyone
+  // can verify exactly which commit is live (e.g. after pushing a fix).
+  res.json({
+    success: true,
+    data: {
+      status: "ok",
+      commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null,
+      time: new Date().toISOString(),
+    },
+  });
 });
 
 app.use("/api/auth", authLimiter, authRoutes);

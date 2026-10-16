@@ -1,6 +1,11 @@
 import { prisma } from "../../lib/prisma";
 import { listCanvaTools, callCanvaTool, type McpToolDef } from "../connectors/canva/canvaMcp";
 import { DRIVE_TOOLS, callDriveTool, type DriveToolDef } from "../connectors/google/googleDrive";
+import {
+  buildSearchContextBlock,
+  performWebSearchWithProvider,
+} from "../../lib/websearch";
+import { resolveSearchDepth } from "../../lib/searchSettings";
 import { logger } from "../../lib/logger";
 
 // NOTE: this app's LLM is OpenRouter (OpenAI-compatible chat completions),
@@ -22,10 +27,11 @@ export type LlmToolCall = {
 
 const CANVA_PREFIX = "canva__";
 const DRIVE_PREFIX = "drive__";
+const WEB_PREFIX = "web__";
 const MAX_TOOL_RESULT_CHARS = 8000;
 
 export const isConnectorToolName = (name: string): boolean =>
-  name.startsWith(CANVA_PREFIX) || name.startsWith(DRIVE_PREFIX);
+  name.startsWith(CANVA_PREFIX) || name.startsWith(DRIVE_PREFIX) || name.startsWith(WEB_PREFIX);
 
 export const isCanvaConnected = async (userId: string): Promise<boolean> => {
   const row = await prisma.connectorToken.findUnique({
@@ -109,6 +115,87 @@ const contentToText = (result: unknown): string => {
   return String(result ?? "");
 };
 
+// Model-callable live web search: the selected model invokes this itself
+// (parallel fan-out across providers) whenever it judges it needs fresh
+// facts — including follow-up searches mid-turn that server pre-injection
+// can't foresee. No images here (fast text path); URLs ride as links.
+export const getWebSearchToolDef = (): LlmToolDef => ({
+  type: "function" as const,
+  function: {
+    name: `${WEB_PREFIX}search`,
+    description:
+      "Search the live web (Brave, Exa, YouTube, DuckDuckGo queried in parallel). Use when you need current facts, news, prices, scores or anything beyond training data. Returns titles, URLs and content snippets.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The search query" },
+        max: { type: "number", description: "Max results (3-20, default is the user's Search settings depth)" },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+});
+
+const runWebSearchTool = async (
+  userId: string,
+  toolArgs: Record<string, unknown>
+): Promise<string> => {
+  const rawQuery = typeof toolArgs.query === "string" ? toolArgs.query.trim().slice(0, 500) : "";
+  if (!rawQuery) {
+    throw Object.assign(new Error("Invalid arguments: missing required field: query"), {
+      code: "INVALID_TOOL_ARGS",
+    });
+  }
+  const depth = await resolveSearchDepth(userId);
+  const n = typeof toolArgs.max === "number" && Number.isFinite(toolArgs.max)
+    ? Math.min(20, Math.max(3, Math.floor(toolArgs.max)))
+    : depth;
+  const { hits } = await performWebSearchWithProvider(rawQuery, n, "auto");
+  if (hits.length === 0) return "No web results found.";
+  return buildSearchContextBlock(rawQuery, hits);
+};
+
+// Parallel orchestration cap: one model turn may fan out this many tool
+// calls at once (parallel subagents). Results re-attach in request order.
+export const MAX_PARALLEL_TOOL_CALLS = 8;
+
+// Runs every requested call CONCURRENTLY and returns plain-text results in
+// request order — wall-clock is the slowest tool, not the sum. Invalid args
+// and per-tool failures become inline Error texts (never throw), so one bad
+// call can't sink its siblings.
+export const executeToolCallsParallel = async (
+  userId: string,
+  calls: Array<{ id: string; name: string; arguments: string }>
+): Promise<Array<{ id: string; text: string }>> => {
+  const capped = calls.filter((c) => c.name).slice(0, MAX_PARALLEL_TOOL_CALLS);
+  const settled = await Promise.allSettled(
+    capped.map(async (tc) => {
+      let parsedArgs: Record<string, unknown> = {};
+      try {
+        const raw = tc.arguments.trim() ? JSON.parse(tc.arguments) : {};
+        parsedArgs = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+      } catch {
+        return {
+          id: tc.id,
+          text: "Error: the model produced invalid JSON arguments and they were rejected.",
+        };
+      }
+      try {
+        return { id: tc.id, text: await executeMcpTool(userId, tc.name, parsedArgs) };
+      } catch (err: unknown) {
+        const msg = (err as { message?: unknown })?.message;
+        return { id: tc.id, text: `Error: ${typeof msg === "string" && msg ? msg : "tool execution failed"}` };
+      }
+    })
+  );
+  return settled.map((s, i) =>
+    s.status === "fulfilled"
+      ? s.value
+      : { id: capped[i]?.id ?? "", text: "Error: tool execution failed" }
+  );
+};
+
 // Executes one LLM-requested connector tool call and returns plain text for
 // the conversation loop. Throws with code NOT_CONNECTED / UNKNOWN_TOOL /
 // INVALID_TOOL_ARGS for the caller to translate.
@@ -118,7 +205,14 @@ export const executeMcpTool = async (
   toolArgs: Record<string, unknown>
 ): Promise<string> => {
   let raw: unknown;
-  if (llmToolName.startsWith(DRIVE_PREFIX)) {
+  if (llmToolName.startsWith(WEB_PREFIX)) {
+    if (llmToolName !== `${WEB_PREFIX}search`) {
+      throw Object.assign(new Error(`Unknown web tool: ${llmToolName}`), {
+        code: "UNKNOWN_TOOL",
+      });
+    }
+    raw = await runWebSearchTool(userId, toolArgs);
+  } else if (llmToolName.startsWith(DRIVE_PREFIX)) {
     raw = await callDriveTool(userId, llmToolName.slice(DRIVE_PREFIX.length), toolArgs);
   } else if (llmToolName.startsWith(CANVA_PREFIX)) {
     raw = await callCanvaTool(userId, llmToolName.slice(CANVA_PREFIX.length), toolArgs);
