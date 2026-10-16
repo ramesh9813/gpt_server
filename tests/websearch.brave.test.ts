@@ -4,7 +4,7 @@ import { env } from "../src/lib/config";
 import { enrichWithImages, extractOgImage, hasAttachedDocument, wantsWebSearch, wantsYouTubeSearch, youTubeVideoIdFromUrl } from "../src/lib/websearch";
 import { performWebSearch } from "../src/lib/websearch";
 import { ensureSingleSourcesSection } from "../src/lib/websearch";
-import { isSearchProvider, providerOrder, resolveSearchProvider } from "../src/lib/searchSettings";
+import { clampSearchDepth, isSearchProvider, providerOrder, resolveSearchDepth, resolveSearchProvider } from "../src/lib/searchSettings";
 import { prisma } from "../src/lib/prisma";
 
 jest.mock("../src/lib/prisma", () => ({
@@ -311,5 +311,28 @@ describe("providerOrder / resolveSearchProvider", () => {
     findUnique.mockResolvedValue(null);
     await expect(resolveSearchProvider("u")).resolves.toBe("auto");
     await expect(resolveSearchProvider("")).resolves.toBe("auto");
+  });
+});
+
+describe("resolveSearchDepth", () => {
+  it("clamps into 3..20, defaulting to 5", () => {
+    expect(clampSearchDepth(10)).toBe(10);
+    expect(clampSearchDepth(3)).toBe(3);
+    expect(clampSearchDepth(20)).toBe(20);
+    expect(clampSearchDepth(1)).toBe(3);
+    expect(clampSearchDepth(100)).toBe(20);
+    expect(clampSearchDepth(undefined)).toBe(5);
+    expect(clampSearchDepth("bogus")).toBe(5);
+  });
+
+  it("resolves the stored depth, defaulting to 5", async () => {
+    const findUnique = prisma.userSettings.findUnique as unknown as jest.Mock;
+    findUnique.mockResolvedValue({ userId: "u", searchDepth: 15 });
+    await expect(resolveSearchDepth("u")).resolves.toBe(15);
+    findUnique.mockResolvedValue({ userId: "u", searchDepth: 99 });
+    await expect(resolveSearchDepth("u")).resolves.toBe(20);
+    findUnique.mockResolvedValue(null);
+    await expect(resolveSearchDepth("u")).resolves.toBe(5);
+    await expect(resolveSearchDepth("")).resolves.toBe(5);
   });
 });

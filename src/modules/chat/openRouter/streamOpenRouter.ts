@@ -12,7 +12,7 @@ import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, 
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../../lib/youtubeTranscript";
 import { fetchLinkedPages } from "../../../lib/pageContent";
-import { resolveSearchProvider, searchProviderLabel } from "../../../lib/searchSettings";
+import { resolveSearchDepth, resolveSearchProvider, searchProviderLabel } from "../../../lib/searchSettings";
 
 type PendingToolCall = { id: string; name: string; arguments: string };
 
@@ -184,10 +184,11 @@ export const streamOpenRouterCompletion = async (
     if (query) {
       try {
         const searchProvider = await resolveSearchProvider((req as any).user?.id);
+        const searchDepth = await resolveSearchDepth((req as any).user?.id);
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
-        const { hits: rawHits } = await performWebSearchWithProvider(query, 5, searchProvider);
+        const { hits: rawHits } = await performWebSearchWithProvider(query, searchDepth, searchProvider);
         const hits = await enrichWithImages(rawHits);
         hits.forEach((h, i) =>
           sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url) })

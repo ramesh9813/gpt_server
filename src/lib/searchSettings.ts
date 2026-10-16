@@ -43,3 +43,27 @@ export const resolveSearchProvider = async (userId: string): Promise<SearchProvi
     return "auto";
   }
 };
+
+// Dynamic result count ("Search settings" → number of websites). Stored in
+// userSettings.searchDepth: 3/5/10/15/20 (default 5, the old hardcoded
+// value). Anything else clamps into 3..20 so a stale row can never break
+// or blow up a provider call.
+export const SEARCH_DEPTH_DEFAULT = 5;
+export const SEARCH_DEPTH_MIN = 3;
+export const SEARCH_DEPTH_MAX = 20;
+
+export const clampSearchDepth = (v: unknown): number => {
+  const n = typeof v === "number" ? Math.floor(v) : parseInt(String(v ?? ""), 10);
+  if (!Number.isFinite(n)) return SEARCH_DEPTH_DEFAULT;
+  return Math.min(SEARCH_DEPTH_MAX, Math.max(SEARCH_DEPTH_MIN, n));
+};
+
+export const resolveSearchDepth = async (userId: string): Promise<number> => {
+  if (!userId) return SEARCH_DEPTH_DEFAULT;
+  try {
+    const row = await prisma.userSettings.findUnique({ where: { userId } });
+    return clampSearchDepth((row as { searchDepth?: unknown } | null)?.searchDepth);
+  } catch {
+    return SEARCH_DEPTH_DEFAULT;
+  }
+};
