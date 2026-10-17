@@ -3,6 +3,7 @@ jest.mock("../src/lib/prisma", () => ({ prisma: {} }));
 // MCQ quiz helpers: answer spread must hold no matter how the model
 // clusters correct positions, and malformed rows pass through untouched.
 import { extractCompleteMcqQuestions, hashQuestion, parseMcqCount, spreadAnswerPositions, type McqQuestion } from "../src/modules/chat/mcq";
+import { callByokText } from "../src/modules/chat/byokCall";
 
 const clustered = (n: number): McqQuestion[] =>
   Array.from({ length: n }, (_, i) => ({
@@ -87,5 +88,46 @@ describe("extractCompleteMcqQuestions", () => {
     const out = extractCompleteMcqQuestions(`{"questions":[${tricky}]}`);
     expect(out).toHaveLength(1);
     expect(out[0].answerIndex).toBe(2);
+  });
+});
+
+describe("callByokText images", () => {
+  const IMG = "data:image/png;base64,AAA";
+  const bodies: any[] = [];
+  beforeEach(() => {
+    bodies.length = 0;
+    (global as any).fetch = jest.fn(async (_url: string, init: any) => {
+      bodies.push(JSON.parse(init.body));
+      return { ok: false, status: 400, text: async () => "" };
+    });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  const byokFor = (kind: string) => ({
+    provider: { id: "p1", name: "P", kind, baseUrl: "https://x.test/v1" },
+    model: "m",
+    apiKey: "k",
+  }) as any;
+
+  it("wires image parts natively per provider kind", async () => {
+    await callByokText(byokFor("openai"), "quiz me", { images: [IMG] });
+    const openaiContent = bodies[0].messages[0].content;
+    expect(openaiContent).toContainEqual({ type: "image_url", image_url: { url: IMG } });
+
+    await callByokText(byokFor("gemini"), "quiz me", { images: [IMG] });
+    const geminiParts = bodies[1].contents[0].parts;
+    expect(geminiParts).toContainEqual({ inline_data: { mime_type: "image/png", data: "AAA" } });
+
+    await callByokText(byokFor("anthropic"), "quiz me", { images: [IMG] });
+    const anthropicContent = bodies[2].messages[0].content;
+    expect(anthropicContent).toContainEqual({
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: "AAA" },
+    });
+  });
+
+  it("sends text-only turns unchanged", async () => {
+    await callByokText(byokFor("openai"), "quiz me", {});
+    expect(bodies[0].messages).toEqual([{ role: "user", content: "quiz me" }]);
   });
 });

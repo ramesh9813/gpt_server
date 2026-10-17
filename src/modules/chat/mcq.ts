@@ -6,6 +6,7 @@ import { sseHead, sseSend, sseEnd, finishTextReply } from "./sse";
 import { logger } from "../../lib/logger";
 import type { ByokRequest } from "../../lib/byok";
 import { callByokText } from "./byokCall";
+import { isVisionRejection } from "./byokRequest";
 
 // ---------------------------------------------------------------------------
 // MCQ quiz generation (non-streaming turn, SSE-framed quiz event)
@@ -85,6 +86,9 @@ export type McqReplyOpts = {
   // Folder + chat custom prompts (already merged by the route): quiz
   // generation binds them like every other AI call.
   systemPrompt?: string;
+  // Attached image dataURLs: the quiz is generated ON the pictures — content
+  // is extracted from them first, then questions are written from it.
+  images?: string[];
 };
 
 const MCQ_REPEAT_BYPASS = /repeat|shuffle|again/i;
@@ -113,9 +117,9 @@ const buildMcqPrompt = (
   topic: string,
   count: number,
   exclusion: string[],
-  opts: { round?: number; continuation?: boolean } = {}
+  opts: { round?: number; continuation?: boolean; hasImages?: boolean } = {}
 ): string => {
-  const { round = 1, continuation = false } = opts;
+  const { round = 1, continuation = false, hasImages = false } = opts;
   const head = continuation
     ? `Round ${round} of the "${topic}" quiz: generate EXACTLY ${count} NEW questions. ` +
       `Earlier rounds are in our chat history — do not repeat any asked question. ` +
@@ -125,8 +129,11 @@ const buildMcqPrompt = (
       `This is a strict requirement: your response must contain exactly ${count} questions — no more, no fewer. Count them before replying. ` +
       `Each question must have exactly 4 options with exactly one correct answer.`;
   const base = `${head} ${ANSWER_SPREAD_LINE} ${PATTERN_VARIETY_LINE} ${JSON_FORMAT_LINE}`;
-  if (exclusion.length === 0) return base;
-  return `${base} Do NOT repeat these questions: ${JSON.stringify(exclusion)}`;
+  const imgLine = hasImages
+    ? ` The attached image(s) are the quiz source: first extract and understand exactly what each image shows, then write every question strictly about that visible content.`
+    : "";
+  if (exclusion.length === 0) return `${base}${imgLine}`;
+  return `${base}${imgLine} Do NOT repeat these questions: ${JSON.stringify(exclusion)}`;
 };
 
 /** Deterministic answer spread: rotate each question's options by
@@ -245,6 +252,11 @@ const parseMcqText = (text: string): McqQuestion[] | null => {
 
 export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
   const { assistantMessageId, conversationId, topic, selectedModel, askedBank, round } = opts;
+  // Quiz-on-image: attached pictures are the quiz source even when the user
+  // typed nothing — extract their content first, then write questions from it.
+  const quizImages = Array.isArray(opts.images)
+    ? opts.images.filter((u): u is string => typeof u === "string" && u.startsWith("data:image/")).slice(0, 5)
+    : [];
   const startedAt = Date.now();
   sseHead(res);
   const sendEvent = sseSend(res);
@@ -254,21 +266,23 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
   };
 
   const cleanTopic = (topic || "").trim();
-  if (!cleanTopic) {
+  if (!cleanTopic && quizImages.length === 0) {
     return finishText("Tell me a topic for the quiz — e.g. `mcq solar system`.");
   }
+  // Image-only quiz ask: the pictures ARE the topic.
+  const effectiveTopic = cleanTopic || "the attached image";
 
   // Next-round shortcut: the client sends only "mcq next round" — the topic
   // resolves from the latest quiz in this conversation (history binds the
   // context). Accepts an optional count ("mcq next round 5") or topic
   // ("mcq next round on photosynthesis").
-  let roundTopic = cleanTopic;
+  let roundTopic = effectiveTopic;
   let continuation = false;
   let countOverride: number | null = null;
-  const nrMatch = cleanTopic.match(NEXT_ROUND_RE);
+  const nrMatch = effectiveTopic.match(NEXT_ROUND_RE);
   if (nrMatch) {
     continuation = true;
-    const rest = cleanTopic
+    const rest = effectiveTopic
       .slice(nrMatch[0].length)
       .trim()
       .replace(/^on\s+/i, "");
@@ -280,7 +294,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       if (/\d/.test(rest)) countOverride = parsed.count;
       if (parsed.cleanTopic && !/^\d+\s*$/.test(rest)) roundTopic = parsed.cleanTopic;
     }
-    if (roundTopic === cleanTopic) {
+    if (roundTopic === effectiveTopic) {
       const recent = await prisma.message.findMany({
         where: { conversationId },
         orderBy: { createdAt: "desc" },
@@ -300,7 +314,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
   }
 
   try {
-    const bypassExclusion = MCQ_REPEAT_BYPASS.test(cleanTopic);
+    const bypassExclusion = MCQ_REPEAT_BYPASS.test(effectiveTopic);
     const bankList: string[] = Array.isArray(askedBank)
       ? askedBank.filter((v): v is string => typeof v === "string" && v.length > 0)
       : [];
@@ -310,23 +324,39 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       ? []
       : bankList.slice(0, 30).map((q) => q.slice(0, 120));
     const { count: parsedCount, cleanTopic: countedTopic } = parseMcqCount(
-      continuation ? roundTopic : cleanTopic
+      continuation ? roundTopic : effectiveTopic
     );
     const count = countOverride ?? parsedCount;
-    const topicForPrompt = continuation ? roundTopic : countedTopic || cleanTopic;
+    const topicForPrompt = continuation ? roundTopic : countedTopic || effectiveTopic;
+
+    // When the model rejects image parts (text-only model), quiz turns fail
+    // with the exact reason instead of a generic error — recorded here.
+    const visionRejection: { current: { status: number; body: string } | null } = { current: null };
+    const noteVisionRejection = (status: number, body: string): void => {
+      if (quizImages.length > 0 && !visionRejection.current && isVisionRejection(status, body)) {
+        visionRejection.current = { status, body };
+      }
+    };
 
     const attemptOnce = async (askCount: number, askExclusion: string[]): Promise<McqQuestion[] | null> => {
       const askPrompt = buildMcqPrompt(topicForPrompt, askCount, askExclusion, {
         round,
         continuation,
+        hasImages: quizImages.length > 0,
       });
       const tuning = typeof opts.systemPrompt === "string" ? opts.systemPrompt.trim() : "";
       const askMaxTokens = Math.min(8000, Math.max(2000, askCount * 250));
+      // Image parts ride alongside the prompt so the model extracts content
+      // from the pictures first, then writes questions from it.
+      const imageParts = quizImages.map((url) => ({ type: "image_url" as const, image_url: { url } }));
+      const tuningBlock = tuning ? [{ role: "system", content: tuning }] : [];
       // BYOK: ask the user's provider directly (same prompt + parsing).
       if (opts.byok) {
         const text = await callByokText(opts.byok, tuning ? `${tuning}\n\n${askPrompt}` : askPrompt, {
           maxTokens: askMaxTokens,
           temperature: 0.7,
+          images: quizImages,
+          onHttpError: (status, body) => noteVisionRejection(status, body),
         });
         return text ? parseMcqText(text) : null;
       }
@@ -341,15 +371,30 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
           },
           body: JSON.stringify({
             model: selectedModel,
-            messages: tuning
-              ? [{ role: "system", content: tuning }, { role: "user", content: askPrompt }]
-              : [{ role: "user", content: askPrompt }],
+            messages: [
+              ...tuningBlock,
+              {
+                role: "user",
+                content: imageParts.length > 0
+                  ? [{ type: "text", text: askPrompt }, ...imageParts]
+                  : askPrompt,
+              },
+            ],
             max_tokens: Math.min(8000, Math.max(2000, askCount * 250)),
             temperature: 0.7,
           }),
           signal: AbortSignal.timeout(90000),
         });
-        if (!response.ok) return null;
+        if (!response.ok) {
+          if (imageParts.length > 0) {
+            try {
+              noteVisionRejection(response.status, await response.text());
+            } catch {
+              // ignore body-read failure
+            }
+          }
+          return null;
+        }
         const json = (await response.json()) as any;
         const text: string = json?.choices?.[0]?.message?.content ?? "";
         return parseMcqText(text);
@@ -364,7 +409,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
     const mergeInto = (target: McqQuestion[], incoming: McqQuestion[] | null): McqQuestion[] =>
       mergeMcqQuestions(target, incoming, count, bankSet, bypassExclusion);
 
-    const displayTopic = continuation ? roundTopic : cleanTopic;
+    const displayTopic = continuation ? roundTopic : effectiveTopic;
 
     // Progressive render: push the growing question list to the client the
     // moment each new question completes (cumulative `quiz` events replace
@@ -402,9 +447,16 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       const askPrompt = buildMcqPrompt(topicForPrompt, askCount, askExclusion, {
         round,
         continuation,
+        hasImages: quizImages.length > 0,
       });
       const tuning = typeof opts.systemPrompt === "string" ? opts.systemPrompt.trim() : "";
       const askMaxTokens = Math.min(8000, Math.max(2000, askCount * 250));
+      const imageParts = quizImages.map((url) => ({ type: "image_url" as const, image_url: { url } }));
+      const tuningBlock = tuning ? [{ role: "system", content: tuning }] : [];
+      const askUserTurn = {
+        role: "user",
+        content: imageParts.length > 0 ? [{ type: "text", text: askPrompt }, ...imageParts] : askPrompt,
+      };
       let url: string;
       let headers: Record<string, string>;
       let body: Record<string, unknown>;
@@ -418,9 +470,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
         };
         body = {
           model: opts.byok.model,
-          messages: tuning
-            ? [{ role: "system", content: tuning }, { role: "user", content: askPrompt }]
-            : [{ role: "user", content: askPrompt }],
+          messages: [...tuningBlock, askUserTurn],
           max_tokens: askMaxTokens,
           temperature: 0.7,
           stream: true,
@@ -435,9 +485,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
         };
         body = {
           model: selectedModel,
-          messages: tuning
-            ? [{ role: "system", content: tuning }, { role: "user", content: askPrompt }]
-            : [{ role: "user", content: askPrompt }],
+          messages: [...tuningBlock, askUserTurn],
           max_tokens: askMaxTokens,
           temperature: 0.7,
           stream: true,
@@ -481,7 +529,16 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       } catch {
         return null;
       }
-      if (!response.ok || !response.body) return null;
+      if (!response.ok || !response.body) {
+        if (quizImages.length > 0 && !response.ok) {
+          try {
+            noteVisionRejection(response.status, await response.text());
+          } catch {
+            // ignore body-read failure
+          }
+        }
+        return null;
+      }
       try {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -519,6 +576,14 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       fetched = await attemptOnce(count, exclusion);
     }
     if (!fetched || fetched.length === 0) {
+      // Text-only model on a picture quiz: say exactly that (model name +
+      // provider reason) instead of a generic failure.
+      const vr = visionRejection.current;
+      if (vr) {
+        return finishText(
+          `This model can't view images, so I couldn't build a quiz on your picture${vr.body ? ` (${vr.body.slice(0, 200)})` : ""} — pick a vision-capable model and ask again.`
+        );
+      }
       return finishText(`Sorry, I couldn't generate a quiz on "${displayTopic}" right now. Please try again.`);
     }
 
@@ -604,6 +669,6 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
     return safeEnd();
   } catch (err: any) {
     logger.error({ err }, "MCQ reply error");
-    return finishText(`Sorry, I couldn't generate a quiz on "${cleanTopic}" right now. Please try again.`);
+    return finishText(`Sorry, I couldn't generate a quiz on "${effectiveTopic}" right now. Please try again.`);
   }
 };

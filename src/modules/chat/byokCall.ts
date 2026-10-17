@@ -10,14 +10,34 @@ const VERIFY_TEST_TIMEOUT_MS = 25000;
 const VERIFY_TEST_PROMPT = "Reply with exactly: ok";
 
 // Sends a single-turn prompt to the BYOK provider and returns plain text,
-// or null on any error (callers already degrade gracefully).
+// or null on any error (callers already degrade gracefully). Pass `images`
+// (image dataURLs) to quiz on pictures: each kind wires them natively
+// (OpenAI parts, Gemini inline data, Anthropic image blocks). `onHttpError`
+// reports non-OK statuses with bodies so callers can name exact failures
+// (e.g. vision rejection) instead of guessing.
 export const callByokText = async (
   byok: ByokRequest,
   prompt: string,
-  opts: { maxTokens?: number; temperature?: number } = {}
+  opts: {
+    maxTokens?: number;
+    temperature?: number;
+    images?: string[];
+    onHttpError?: (status: number, bodyText: string) => void;
+  } = {}
 ): Promise<string | null> => {
   const { provider, model, apiKey } = byok;
   const maxTokens = opts.maxTokens ?? 150;
+  const fail = async (res: Response): Promise<null> => {
+    try {
+      opts.onHttpError?.(res.status, await res.text());
+    } catch {
+      opts.onHttpError?.(res.status, "");
+    }
+    return null;
+  };
+  const visionImages = Array.isArray(opts.images)
+    ? opts.images.filter((u) => typeof u === "string" && u.startsWith("data:image/"))
+    : [];
   try {
     if (provider.kind === "gemini") {
       const response = await fetch(
@@ -30,7 +50,18 @@ export const callByokText = async (
             "x-goog-api-key": apiKey,
           },
           body: JSON.stringify({
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  { text: prompt },
+                  ...visionImages.flatMap((url) => {
+                    const m = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/.exec(url);
+                    return m ? [{ inline_data: { mime_type: m[1], data: m[2] } }] : [];
+                  }),
+                ],
+              },
+            ],
             generationConfig: {
               maxOutputTokens: Math.max(maxTokens, 1024), // gemini counts thoughts here too
               ...(opts.temperature !== undefined
@@ -41,7 +72,7 @@ export const callByokText = async (
           signal: AbortSignal.timeout(FOLLOWUP_STYLE_TIMEOUT_MS),
         }
       );
-      if (!response.ok) return null;
+      if (!response.ok) return fail(response);
       const json = (await response.json()) as any;
       const parts = json?.candidates?.[0]?.content?.parts;
       if (!Array.isArray(parts)) return null;
@@ -64,11 +95,24 @@ export const callByokText = async (
         body: JSON.stringify({
           model,
           max_tokens: Math.max(maxTokens, 1024),
-          messages: [{ role: "user", content: prompt }],
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: prompt },
+                ...visionImages.flatMap((url) => {
+                  const m = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/.exec(url);
+                  return m
+                    ? [{ type: "image", source: { type: "base64", media_type: m[1], data: m[2] } }]
+                    : [];
+                }),
+              ],
+            },
+          ],
         }),
         signal: AbortSignal.timeout(FOLLOWUP_STYLE_TIMEOUT_MS),
       });
-      if (!response.ok) return null;
+      if (!response.ok) return fail(response);
       const json = (await response.json()) as any;
       const blocks: any[] = Array.isArray(json?.content) ? json.content : [];
       const text = blocks
@@ -88,7 +132,17 @@ export const callByokText = async (
       },
       body: JSON.stringify({
         model,
-        messages: [{ role: "user", content: prompt }],
+        messages: [
+          visionImages.length > 0
+            ? {
+                role: "user",
+                content: [
+                  { type: "text", text: prompt },
+                  ...visionImages.map((url) => ({ type: "image_url", image_url: { url } })),
+                ],
+              }
+            : { role: "user", content: prompt },
+        ],
         max_tokens: maxTokens,
         ...(opts.temperature !== undefined
           ? { temperature: opts.temperature }
@@ -97,7 +151,7 @@ export const callByokText = async (
       }),
       signal: AbortSignal.timeout(FOLLOWUP_STYLE_TIMEOUT_MS),
     });
-    if (!response.ok) return null;
+    if (!response.ok) return fail(response);
     const json = (await response.json()) as any;
     const text: string = json?.choices?.[0]?.message?.content ?? "";
     return text || null;

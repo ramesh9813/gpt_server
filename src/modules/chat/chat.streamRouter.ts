@@ -117,7 +117,7 @@ export const handleStream = async (req: Request, res: Response) => {
     let quizCount = 0;
     try { quizCount = await (prisma.message as any).count({ where: { conversationId, NOT: { quiz: null } } }); } catch { quizCount = 0; }
     const round = (typeof quizCount === "number" ? quizCount : 0) + 1;
-    return sendMcqReply(req, res, { assistantMessageId: assistantMsg.id, conversationId, topic, selectedModel, askedBank, round, systemPrompt: mergedSystemPrompt, ...(byokArg ? { byok: byokArg } : {}) });
+    return sendMcqReply(req, res, { assistantMessageId: assistantMsg.id, conversationId, topic, selectedModel, askedBank, round, systemPrompt: mergedSystemPrompt, images: userImages, ...(byokArg ? { byok: byokArg } : {}) });
   };
 
   if (byok) {

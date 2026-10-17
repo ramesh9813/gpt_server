@@ -335,6 +335,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
         round,
         byok,
         systemPrompt: mergedSystemPrompt,
+        images: userImages,
       });
     }
     const { messages, stats } = buildHistoryMessages(scopedHistory, {
@@ -394,6 +395,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       askedBank,
       round,
       systemPrompt: mergedSystemPrompt,
+      images: userImages,
     });
   }
 
