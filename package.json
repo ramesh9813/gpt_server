@@ -11,7 +11,7 @@
     "start:prod": "prisma db push --skip-generate && tsx src/index.ts",
     "start:dev": "tsx src/index.ts",
     "lint": "echo \"lint not configured\"",
-    "test": "NODE_ENV=test jest --runInBand",
+    "test": "NODE_ENV=test jest --runInBand --workerIdleMemoryLimit=512M",
     "prisma:generate": "prisma generate",
     "migrate": "prisma migrate dev",
     "seed": "prisma db seed"
