@@ -8,12 +8,13 @@ import type { ByokRequest } from "../../lib/byok";
 import { isFirewallChallengeBody } from "../../lib/byok";
 import { logger } from "../../lib/logger";
 import { generateByokFollowups, isFollowupsEnabled } from "./followups";
+import { callByokText } from "./byokCall";
 import { buildByokStreamRequest, byokErrorMessage, hasAudioContent, hasMultimodalContent, isTokenLimitRejection, isVisionRejection, stripImageParts } from "./byokRequest";
 import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
 import { RESEARCH_SYSTEM_PROMPT } from "./chatPrompts";
-import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages } from "../../lib/websearch";
+import { buildSearchContextBlock, deepResearchSearch, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages } from "../../lib/websearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
 import { SEARCH_DEPTH_DEFAULT, researchSearchDepth, resolveSearchDepth, resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
@@ -162,7 +163,18 @@ export const streamByokCompletion = async (
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
-        const { hits: rawHits } = await performWebSearchWithProvider(query, searchDepth, searchProvider);
+        const { hits: rawHits } = research === true
+          // Layered deep research on the current model: search → evaluate →
+          // deepen → evaluate, then the final report. No model check.
+          ? (await deepResearchSearch({
+              query,
+              depth: searchDepth,
+              provider: searchProvider,
+              askModel: (prompt) => callByokText(byok, prompt, { maxTokens: 300, temperature: 0.3 }).then((t) => t ?? ""),
+              onStage: (text) => sendEvent("stage", { text }),
+              isAborted: () => controller.signal.aborted,
+            })).hits
+          : (await performWebSearchWithProvider(query, searchDepth, searchProvider)).hits;
         // Photos only on image-intent turns — every other search stays a fast,
         // imageless text path (no og:image fetches at all).
         const hits = wantsSearchImages(query) ? await enrichWithImages(rawHits) : rawHits;

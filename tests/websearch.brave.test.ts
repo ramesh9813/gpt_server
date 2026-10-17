@@ -2,7 +2,7 @@
 /// <reference types="jest" />
 import { env } from "../src/lib/config";
 import { enrichWithImages, extractOgImage, hasAttachedDocument, stageLineForSource, wantsWebSearch, wantsSearchImages, wantsYouTubeSearch, youTubeVideoIdFromUrl } from "../src/lib/websearch";
-import { performWebSearch } from "../src/lib/websearch";
+import { deepResearchSearch, performWebSearch } from "../src/lib/websearch";
 import { performWebSearchWithProvider } from "../src/lib/websearch";
 import { ensureSingleSourcesSection } from "../src/lib/websearch";
 import { clampSearchDepth, isSearchProvider, providerOrder, researchSearchDepth, resolveSearchDepth, resolveSearchProvider } from "../src/lib/searchSettings";
@@ -431,4 +431,77 @@ describe("wantsSearchImages", () => {
     "write a poem about the sea",
     "",
   ])("stays imageless for %p", (q) => expect(wantsSearchImages(q)).toBe(false));
+});
+
+describe("deepResearchSearch", () => {
+  const OLD_BRAVE = env.BRAVE_API_KEY;
+  const OLD_EXA = (env as any).EXA_API_KEY;
+  const OLD_YT = (env as any).YOUTUBE_API_KEY;
+  afterEach(() => {
+    jest.restoreAllMocks();
+    (env as any).BRAVE_API_KEY = OLD_BRAVE;
+    (env as any).EXA_API_KEY = OLD_EXA;
+    (env as any).YOUTUBE_API_KEY = OLD_YT;
+  });
+
+  const braveMock = (tag: { n: number }) => jest.fn(async (url: string) => {
+    const u = String(url);
+    if (u.includes("api.search.brave.com")) {
+      tag.n += 1;
+      const k = tag.n;
+      return {
+        ok: true,
+        json: async () => ({
+          grounding: {
+            generic: [
+              { url: `https://example.com/wave${k}-a`, title: `Wave ${k} A`, snippets: ["x"] },
+              { url: `https://example.com/wave${k}-b`, title: `Wave ${k} B`, snippets: ["y"] },
+            ],
+          },
+        }),
+      };
+    }
+    return { ok: false };
+  });
+
+  it("layers follow-up waves onto the initial fan-out", async () => {
+    (env as any).BRAVE_API_KEY = "k";
+    (env as any).EXA_API_KEY = "";
+    (env as any).YOUTUBE_API_KEY = "";
+    (global as any).fetch = braveMock({ n: 0 });
+    const stages: string[] = [];
+    const asks = ['["deeper angle"]', "[]"];
+    const { hits, roundsRun } = await deepResearchSearch({
+      query: "quantum batteries",
+      depth: 10,
+      provider: "auto",
+      askModel: async () => asks.shift() ?? "[]",
+      onStage: (t) => stages.push(t),
+    });
+    expect(roundsRun).toBe(1);
+    // Initial wave (2) + round-1 wave (2 new).
+    expect(hits).toHaveLength(4);
+    expect(stages.some((s) => s.includes("round 1"))).toBe(true);
+  });
+
+  it("stops when the model reports findings suffice", async () => {
+    (env as any).BRAVE_API_KEY = "k";
+    (env as any).EXA_API_KEY = "";
+    (env as any).YOUTUBE_API_KEY = "";
+    (global as any).fetch = braveMock({ n: 0 });
+    let asked = 0;
+    const { hits, roundsRun } = await deepResearchSearch({
+      query: "simple question",
+      depth: 10,
+      provider: "auto",
+      askModel: async () => {
+        asked++;
+        return "[]";
+      },
+      onStage: () => {},
+    });
+    expect(roundsRun).toBe(0);
+    expect(asked).toBe(1);
+    expect(hits.length).toBeGreaterThan(0);
+  });
 });

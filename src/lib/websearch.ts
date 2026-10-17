@@ -302,6 +302,110 @@ export const performWebSearch = async (
   provider: "auto" | "brave" | "exa" | "youtube" | "duckduckgo" = "auto"
 ): Promise<WebResult[]> => (await performWebSearchWithProvider(query, max, provider)).hits;
 
+// Layered deep research: initial parallel fan-out, then up to `maxRounds`
+// evaluate-and-deepen rounds. Each round asks the model what is still
+// missing (given titles + snippets so far) and fans those follow-up queries
+// out in parallel. Stops early on empty follow-ups, no new sources, abort,
+// or the source cap. askModel/isAborted/onStage are injected so this stays
+// provider-agnostic and unit-testable (no model/DB imports here).
+export const DEEP_RESEARCH_MAX_ROUNDS = 2;
+export const DEEP_RESEARCH_MAX_SOURCES = 80;
+
+const parseFollowupQueries = (text: string): string[] => {
+  const cleaned = (text || "").trim().replace(/^```[a-zA-Z]*\s*/, "").replace(/\s*```$/, "").trim();
+  if (!cleaned) return [];
+  const collect = (raw: string): string[] => {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.filter((v): v is string => typeof v === "string");
+    } catch {
+      // fall through
+    }
+    return [];
+  };
+  let out = collect(cleaned);
+  if (out.length === 0) {
+    const match = cleaned.match(/\[[\s\S]*\]/);
+    if (match) out = collect(match[0]);
+  }
+  return out
+    .map((q) => q.trim().slice(0, 200))
+    .filter((q) => q.length > 2)
+    .slice(0, 3);
+};
+
+export const deepResearchSearch = async (args: {
+  query: string;
+  depth: number;
+  provider: "auto" | "brave" | "exa" | "youtube" | "duckduckgo";
+  maxRounds?: number;
+  maxSources?: number;
+  askModel: (prompt: string) => Promise<string>;
+  onStage: (text: string) => void;
+  isAborted?: () => boolean;
+}): Promise<{ hits: WebResult[]; roundsRun: number }> => {
+  const maxRounds = args.maxRounds ?? DEEP_RESEARCH_MAX_ROUNDS;
+  const maxSources = args.maxSources ?? DEEP_RESEARCH_MAX_SOURCES;
+  const normUrl = (u: string): string => {
+    try {
+      const parsed = new URL(u);
+      return `${parsed.hostname.replace(/^www\./, "").toLowerCase()}${parsed.pathname.replace(/\/+$/, "").toLowerCase()}${parsed.search.toLowerCase()}`;
+    } catch {
+      return u.trim().toLowerCase().replace(/\/+$/, "");
+    }
+  };
+  const seen = new Set<string>();
+  const merged: WebResult[] = [];
+  const absorb = (hits: WebResult[]): number => {
+    let added = 0;
+    for (const h of hits) {
+      if (merged.length >= maxSources) break;
+      const key = normUrl(h.url);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(h);
+      added++;
+    }
+    return added;
+  };
+  const first = await performWebSearchWithProvider(args.query, args.depth, args.provider);
+  absorb(first.hits);
+  let roundsRun = 0;
+  for (let round = 1; round <= maxRounds; round++) {
+    if (args.isAborted?.()) break;
+    if (merged.length >= maxSources) break;
+    // Evaluate: condense findings so far into the follow-up prompt.
+    const digest = merged
+      .slice(0, 30)
+      .map((h, i) => `${i + 1}. ${h.title}\n${h.snippet}`.slice(0, 400))
+      .join("\n");
+    const prompt =
+      `Research question: ${args.query}\n\nFindings so far:\n${digest || "(none yet)"}\n\n` +
+      `What 1-3 precise follow-up web searches would deepen this research (gaps, counter-evidence, specifics)? ` +
+      `Reply with ONLY a JSON array of query strings, no other text. Reply [] if the findings already suffice.`;
+    let followups: string[] = [];
+    try {
+      followups = parseFollowupQueries(await args.askModel(prompt));
+    } catch {
+      followups = [];
+    }
+    if (followups.length === 0) break;
+    roundsRun = round;
+    args.onStage(`Deepening research (round ${round}/${maxRounds}): ${followups.length} follow-up search${followups.length === 1 ? "" : "es"}…`);
+    const perQuery = Math.max(10, Math.floor(args.depth / 2));
+    const settled = await Promise.allSettled(
+      followups.map((fq) => performWebSearchWithProvider(fq, perQuery, args.provider))
+    );
+    let added = 0;
+    for (const s of settled) {
+      if (s.status === "fulfilled") added += absorb(s.value.hits);
+    }
+    if (added === 0) break;
+    args.onStage(`Round ${round} added ${added} new source${added === 1 ? "" : "s"} (${merged.length} total)…`);
+  }
+  return { hits: merged, roundsRun };
+};
+
 // Exa AI search (RAG-optimized highlights): POST /search with a Bearer key.
 // Token-lean by design — highlights only, a few results max.
 const performExaSearch = async (query: string, max: number): Promise<WebResult[]> => {

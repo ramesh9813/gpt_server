@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { env } from "../../lib/config";
-import { generateFollowups, isFollowupsEnabled } from "./followups";
+import { askModelText, generateFollowups, isFollowupsEnabled } from "./followups";
 import {
   getAvailableTools,
   getWebSearchToolDef,
@@ -14,7 +14,7 @@ import { imageDataUrlSchema, MAX_IMAGES } from "../../lib/imageValidation";
 import { fileAttachmentsSchema } from "../../lib/fileAttachments";
 import { combineFilesIntoPrompt } from "../../lib/fileAttachments";
 import { TOKEN } from "../../lib/constants";
-import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages } from "../../lib/websearch";
+import { buildSearchContextBlock, deepResearchSearch, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages } from "../../lib/websearch";
 import { isTokenLimitRejection } from "./byokRequest";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
@@ -308,7 +308,18 @@ export const streamOpenRouterCompletion = async (
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
-        const { hits: rawHits } = await performWebSearchWithProvider(query, searchDepth, searchProvider);
+        const { hits: rawHits } = research === true
+          // Layered deep research on the current model: search → evaluate →
+          // deepen → evaluate, then the final report. No model check.
+          ? (await deepResearchSearch({
+              query,
+              depth: searchDepth,
+              provider: searchProvider,
+              askModel: (prompt) => askModelText(selectedModel, prompt),
+              onStage: (text) => sendEvent("stage", { text }),
+              isAborted: () => controller.signal.aborted,
+            })).hits
+          : (await performWebSearchWithProvider(query, searchDepth, searchProvider)).hits;
         // Photos only on image-intent turns — every other search stays a fast,
         // imageless text path (no og:image fetches at all).
         const hits = wantsSearchImages(query) ? await enrichWithImages(rawHits) : rawHits;

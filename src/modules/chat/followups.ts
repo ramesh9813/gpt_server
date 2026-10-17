@@ -98,6 +98,35 @@ export const generateFollowups = async (model: string, answer: string): Promise<
   return parseFollowups(text);
 };
 
+// Generic small OpenRouter text call (research refinement rounds, future
+// single-shot helpers). Returns raw text or "" on any failure — never throws.
+export const askModelText = async (model: string, prompt: string, maxTokens = 300): Promise<string> => {
+  try {
+    const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": env.APP_ORIGIN,
+        "X-Title": "ChatUI",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: maxTokens,
+        temperature: 0.3,
+      }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!response.ok) return "";
+    const json = (await response.json()) as any;
+    const text: string = json?.choices?.[0]?.message?.content ?? "";
+    return typeof text === "string" ? text : "";
+  } catch {
+    return "";
+  }
+};
+
 // BYOK variant: same prompt + parsing, but the call goes to the user's own
 // provider key (OpenAI-compatible / Gemini / Claude Messages API). Best-effort:
 // any failure just yields no follow-ups, exactly like the OpenRouter path.
