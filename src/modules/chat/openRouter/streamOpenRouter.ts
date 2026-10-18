@@ -183,7 +183,7 @@ export const streamOpenRouterCompletion = async (
       { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${linked.block}` },
       ...messages,
     ];
-  } else if (webSearch === true || (!hasDoc && (wantsWebSearch(rawQuery) || research === true))) {
+  } else if (webSearch === true || wantsWebSearch(rawQuery) || (!hasDoc && research === true)) {
     const query = rawQuery.replace(/\[.*?\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
     if (query) {
       try {

@@ -5,7 +5,7 @@ import {
   buildSearchContextBlock,
   performWebSearchWithProvider,
 } from "../../lib/websearch";
-import { resolveSearchDepth } from "../../lib/searchSettings";
+import { resolveSearchDepth, resolveSearchProvider } from "../../lib/searchSettings";
 import { logger } from "../../lib/logger";
 
 // NOTE: this app's LLM is OpenRouter (OpenAI-compatible chat completions),
@@ -151,7 +151,8 @@ const runWebSearchTool = async (
   const n = typeof toolArgs.max === "number" && Number.isFinite(toolArgs.max)
     ? Math.min(20, Math.max(3, Math.floor(toolArgs.max)))
     : depth;
-  const { hits } = await performWebSearchWithProvider(rawQuery, n, "auto");
+  const provider = await resolveSearchProvider(userId);
+  const { hits } = await performWebSearchWithProvider(rawQuery, n, provider);
   if (hits.length === 0) return "No web results found.";
   return buildSearchContextBlock(rawQuery, hits);
 };
