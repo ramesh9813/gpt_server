@@ -14,7 +14,7 @@ import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
 import { RESEARCH_SYSTEM_PROMPT } from "./chatPrompts";
-import { buildSearchContextBlock, deepResearchSearch, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages } from "../../lib/websearch";
+import { buildSearchContextBlock, deepResearchSearch, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages, type WebResult } from "../../lib/websearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
 import { SEARCH_DEPTH_DEFAULT, researchSearchDepth, resolveSearchDepth, resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
@@ -163,7 +163,7 @@ export const streamByokCompletion = async (
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
-        const { hits: rawHits } = research === true
+        const rawHits: WebResult[] = research === true
           // Layered deep research on the current model: search → evaluate →
           // deepen → evaluate, then the final report. No model check.
           ? (await deepResearchSearch({
@@ -262,6 +262,9 @@ export const streamByokCompletion = async (
       code: "BYOK_ERROR",
       message,
       ...(challenged ? { challenged: true } : {}),
+      // If the relay was firewalled after a successful server-side search,
+      // keep those links for the browser-direct fallback / error bubble.
+      ...(challenged && sourceMap.size > 0 ? { sources: [...sourceMap.values()] } : {}),
       assistantMessageId,
       ...(userMessageId ? { userMessageId } : {}),
     });

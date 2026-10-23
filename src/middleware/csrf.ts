@@ -46,6 +46,17 @@ export const csrfProtect = (
   const csrfCookie = req.cookies?.csrfToken;
   const csrfHeader = req.get("x-csrf-token");
 
+  // The readable CSRF cookie can be dropped by browser privacy settings while
+  // the httpOnly refresh cookie still flows. The client keeps a JSON copy of
+  // the same token and sends it as a custom header. A custom header cannot be
+  // forged cross-site without a successful CORS preflight, so accept the
+  // header-only fallback for session refresh/logout.
+  const headerOnlyAllowed =
+    req.path === "/api/auth/refresh" || req.path === "/api/auth/logout";
+  if (!csrfCookie && csrfHeader && headerOnlyAllowed) {
+    return next();
+  }
+
   if (!csrfCookie || !csrfHeader || !timingSafeEqual(csrfCookie, csrfHeader)) {
     return res.status(403).json({
       success: false,

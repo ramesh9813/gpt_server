@@ -14,7 +14,7 @@ import { imageDataUrlSchema, MAX_IMAGES } from "../../lib/imageValidation";
 import { fileAttachmentsSchema } from "../../lib/fileAttachments";
 import { combineFilesIntoPrompt } from "../../lib/fileAttachments";
 import { TOKEN } from "../../lib/constants";
-import { buildSearchContextBlock, deepResearchSearch, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages } from "../../lib/websearch";
+import { buildSearchContextBlock, deepResearchSearch, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages, type WebResult } from "../../lib/websearch";
 import { isTokenLimitRejection } from "./byokRequest";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
@@ -33,7 +33,6 @@ export const streamSchema = z
     artifact: z.boolean().optional(),
     webSearch: z.boolean().optional(),
     think: z.boolean().optional(),
-    compactHistory: z.boolean().optional(),
     promptOnly: z.boolean().optional(),
   })
   .refine((data) => data.userMessage || data.existingUserMessageId || (data.images && data.images.length > 0) || (Array.isArray((data as any).files) && (data as any).files.length > 0), {
@@ -308,7 +307,7 @@ export const streamOpenRouterCompletion = async (
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
         sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
-        const { hits: rawHits } = research === true
+        const rawHits: WebResult[] = research === true
           // Layered deep research on the current model: search → evaluate →
           // deepen → evaluate, then the final report. No model check.
           ? (await deepResearchSearch({
@@ -596,17 +595,42 @@ export const streamOpenRouterCompletion = async (
       if (result.terminal) return;
       usage = result.usage ?? usage;
       const requested = result.toolCalls.filter((c) => c.name).slice(0, MAX_PARALLEL_TOOL_CALLS);
-      const toolsResolved = await loadCanvaTools();
-      if (toolsResolved.length === 0 || requested.length === 0 || turn >= 1 || !canvaUserId) {
+      if (requested.length === 0 || turn >= 1) break;
+      // Web search is a built-in tool and must work even when the user has no
+      // Canva/Drive connector. Connector calls still require a linked account
+      // (and at least one resolved tool) before they are attempted.
+      const connectorRequested = requested.filter((c) => !c.name.startsWith("web__"));
+      const toolsResolved = connectorRequested.length > 0 ? await loadCanvaTools() : [];
+      if (connectorRequested.length > 0 && (toolsResolved.length === 0 || !canvaUserId)) {
         break;
       }
-      const uid = canvaUserId;
+      const uid = canvaUserId ?? (req as any).user?.id;
+      if (!uid) break;
       // Live phase for the client status line; unknown to older clients,
       // which safely ignore unrecognized SSE event types.
       sendEvent("tools", { names: requested.map((c) => c.name) });
       // Parallel subagents: every call the model fanned out this turn runs
       // concurrently — wall-clock is the slowest tool, not the sum.
       const toolResults = await executeToolCallsParallel(uid, requested);
+      // A model-initiated web search must populate the same source list as the
+      // server's pre-search path, otherwise the answer has no URLs to show.
+      for (const toolResult of toolResults) {
+        const found = toolResult.sources ?? [];
+        found.forEach((s, i) =>
+          sendEvent("stage", {
+            text: stageLineForSource(i, found.length, s.title, s.url, s.snippet),
+          })
+        );
+        for (const s of found) {
+          if (!sourceMap.has(s.url)) {
+            sourceMap.set(s.url, {
+              url: s.url,
+              title: s.title,
+              ...(s.image ? { image: s.image } : {}),
+            });
+          }
+        }
+      }
       if (controller.signal.aborted) {
         await prisma.message.update({
           where: { id: assistantMessageId },

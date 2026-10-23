@@ -50,9 +50,6 @@ export const HISTORY = {
   // Tight budget for low-tier providers (e.g. Groq on_demand ITPM 7000):
   // keeps history ≈2k tokens so one-liners never 413.
   TIGHT_CHAR_BUDGET: 8_000,
-  // Emergency budget when the client sends compactHistory (auto-trim armed
-  // and the turn is near the provider's input limit).
-  COMPACT_CHAR_BUDGET: 4_000,
 } as const;
 
 // Providers whose per-minute input caps need the tight history budget.

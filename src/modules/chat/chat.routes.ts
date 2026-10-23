@@ -43,7 +43,6 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     artifact,
     webSearch,
     think,
-    compactHistory,
     promptOnly,
   }: {
     conversationId: string;
@@ -57,7 +56,6 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     artifact?: boolean;
     webSearch?: boolean;
     think?: boolean;
-    compactHistory?: boolean;
     promptOnly?: boolean;
   } = req.body;
 
@@ -121,13 +119,9 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     selectedModel = resolvedModel.model;
   }
 
-  // History budget for this turn: tight for low-tier providers, emergency
-  // clamp when the client auto-trims near the limit. Applies to every model
-  // (BYOK + built-in share the builders below).
-  const historyBudget = resolveHistoryBudget(
-    byok?.provider.id,
-    compactHistory === true
-  );
+  // History budget for this turn: tight for low-tier providers. Applies to
+  // every model (BYOK + built-in share the builders below).
+  const historyBudget = resolveHistoryBudget(byok?.provider.id);
 
   let userMsgContent = userMessage || "";
   let userImages: string[] = Array.isArray(images) ? images : [];

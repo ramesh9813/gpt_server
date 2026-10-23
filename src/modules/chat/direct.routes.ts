@@ -19,7 +19,6 @@ const prepareSchema = z.object({
   assistantMessageId: z.string(),
   existingUserMessageId: z.string(),
   artifact: z.boolean().optional(),
-  compactHistory: z.boolean().optional(),
   promptOnly: z.boolean().optional(),
 });
 
@@ -41,7 +40,6 @@ router.post(
       assistantMessageId,
       existingUserMessageId,
       artifact,
-      compactHistory,
       promptOnly,
     } = req.body as z.infer<typeof prepareSchema>;
 
@@ -191,12 +189,19 @@ router.post(
     const { messages } = buildHistoryMessages(scopedHistory, {
       systemPrompt: mergedSystemPrompt,
       existingUserMessageId: effectiveUserMessageId,
-      charBudget: resolveHistoryBudget(byok.provider.id, compactHistory === true),
+      charBudget: resolveHistoryBudget(byok.provider.id),
     });
 
     await prisma.message.update({
       where: { id: assistantMsg.id },
-      data: { content: "", reasoning: null, status: "STREAMING", error: null },
+      data: {
+        content: "",
+        reasoning: null,
+        status: "STREAMING",
+        error: null,
+        sources: [],
+        usedSearch: false,
+      },
     });
 
     return res.json({
@@ -226,6 +231,16 @@ const finishSchema = z.object({
   tokenCount: z.number().int().nonnegative().optional(),
   durationMs: z.number().int().nonnegative().optional(),
   error: z.string().max(2000).optional(),
+  sources: z
+    .array(
+      z.object({
+        title: z.string().max(300),
+        url: z.string().url().max(2000),
+        image: z.string().url().max(4000).optional(),
+      })
+    )
+    .max(20)
+    .optional(),
 });
 
 // POST /api/chat/direct-finish — persist a browser-direct turn (or its
@@ -247,6 +262,7 @@ router.post(
       tokenCount,
       durationMs,
       error,
+      sources,
     } = req.body as z.infer<typeof finishSchema>;
 
     const conversation = await prisma.conversation.findFirst({
@@ -292,6 +308,9 @@ router.post(
           ...(completionTokens !== undefined ? { completionTokens } : {}),
           ...(tokenCount !== undefined ? { tokenCount } : {}),
           ...(durationMs !== undefined ? { durationMs } : {}),
+          ...(sources !== undefined
+            ? { sources, usedSearch: sources.length > 0 }
+            : {}),
         },
       });
     }

@@ -22,19 +22,12 @@ export const DEFAULT_RECENT_KEEP = HISTORY.DEFAULT_RECENT_KEEP;
 export const DEFAULT_CHAR_BUDGET = HISTORY.DEFAULT_CHAR_BUDGET;
 
 // Effective history budget for a turn: low-tier providers (tight per-minute
-// input caps) get the tight budget; an explicit compactHistory request
-// (client auto-trim near the limit) clamps to the emergency budget.
-export const resolveHistoryBudget = (
-  providerId?: string | null,
-  compact?: boolean
-): number => {
-  const base =
-    providerId &&
-    LOW_HISTORY_BUDGET_PROVIDERS.includes(providerId.trim().toLowerCase())
-      ? HISTORY.TIGHT_CHAR_BUDGET
-      : HISTORY.DEFAULT_CHAR_BUDGET;
-  return compact ? Math.min(base, HISTORY.COMPACT_CHAR_BUDGET) : base;
-};
+// input caps) get the tight budget; everyone else gets the default budget.
+export const resolveHistoryBudget = (providerId?: string | null): number =>
+  providerId &&
+  LOW_HISTORY_BUDGET_PROVIDERS.includes(providerId.trim().toLowerCase())
+    ? HISTORY.TIGHT_CHAR_BUDGET
+    : HISTORY.DEFAULT_CHAR_BUDGET;
 const LONG_LIMIT = HISTORY.LONG_LIMIT;
 const HEAD_LEN = HISTORY.HEAD_LEN;
 const TAIL_LEN = HISTORY.TAIL_LEN;

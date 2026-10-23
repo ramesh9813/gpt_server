@@ -36,8 +36,8 @@ const buildCookieOptions = (req: Request, maxAge: number, httpOnly: boolean): Co
 
 const setAuthCookies = (req: Request, res: Response, accessToken: string, refreshToken: string, csrfToken: string) => {
   res.cookie("accessToken", accessToken, buildCookieOptions(req, 15 * 60 * 1000, true));
-  res.cookie("refreshToken", refreshToken, buildCookieOptions(req, 30 * 24 * 60 * 60 * 1000, true));
-  res.cookie("csrfToken", csrfToken, buildCookieOptions(req, 30 * 24 * 60 * 60 * 1000, false));
+  res.cookie("refreshToken", refreshToken, buildCookieOptions(req, 365 * 24 * 60 * 60 * 1000, true));
+  res.cookie("csrfToken", csrfToken, buildCookieOptions(req, 365 * 24 * 60 * 60 * 1000, false));
 };
 
 const clearAuthCookies = (req: Request, res: Response) => {
@@ -79,7 +79,7 @@ export const signupHandler = async (req: Request, res: Response, next: NextFunct
     const refreshToken = signRefreshToken({ sub: user.id, role: normalizedRole });
     const csrfToken = createCsrfToken();
     await prisma.refreshToken.create({
-      data: { userId: user.id, tokenHash: hashToken(refreshToken), expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+      data: { userId: user.id, tokenHash: hashToken(refreshToken), expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) },
     });
     setAuthCookies(req, res, accessToken, refreshToken, csrfToken);
     return res.status(201).json({
@@ -108,7 +108,7 @@ export const loginHandler = async (req: Request, res: Response, next: NextFuncti
     const refreshToken = signRefreshToken({ sub: user.id, role: normalizedRole });
     const csrfToken = createCsrfToken();
     await prisma.refreshToken.create({
-      data: { userId: user.id, tokenHash: hashToken(refreshToken), expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+      data: { userId: user.id, tokenHash: hashToken(refreshToken), expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) },
     });
     // Sync the stored role with an env-pinned role (owner/admin emails).
     await prisma.user.update({
@@ -181,7 +181,7 @@ export const googleHandler = async (req: Request, res: Response, next: NextFunct
     const refreshToken = signRefreshToken({ sub: user.id, role: normalizedRole });
     const csrfToken = createCsrfToken();
     await prisma.refreshToken.create({
-      data: { userId: user.id, tokenHash: hashToken(refreshToken), expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+      data: { userId: user.id, tokenHash: hashToken(refreshToken), expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) },
     });
     setAuthCookies(req, res, accessToken, refreshToken, csrfToken);
     return res.json({
@@ -197,10 +197,22 @@ export const googleHandler = async (req: Request, res: Response, next: NextFunct
 export const logoutHandler = async (req: Request, res: Response) => {
   const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
   if (refreshToken) {
-    await prisma.refreshToken.updateMany({
-      where: { tokenHash: hashToken(refreshToken), revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
+    // Delete every refresh token for the account, not just the one presented:
+    // explicit logout must also invalidate older rotated tokens still inside
+    // the multi-tab grace window. Best-effort: clearing the browser cookies
+    // below still logs this device out if the DB is briefly unavailable.
+    try {
+      const payload = verifyRefreshToken(refreshToken);
+      await prisma.refreshToken.deleteMany({ where: { userId: payload.sub } });
+    } catch {
+      try {
+        await prisma.refreshToken.deleteMany({
+          where: { tokenHash: hashToken(refreshToken) },
+        });
+      } catch {
+        // ignore — cookies are cleared regardless
+      }
+    }
   }
   clearAuthCookies(req, res);
   return res.json({ success: true, data: {}, message: "Logged out" });
@@ -212,8 +224,15 @@ export const refreshHandler = async (req: Request, res: Response) => {
   if (!refreshToken) {
     return res.status(401).json({ success: false, error: { code: "UNAUTHORIZED", message: "Missing refresh token" } });
   }
+
+  let payload: ReturnType<typeof verifyRefreshToken>;
   try {
-    const payload = verifyRefreshToken(refreshToken);
+    payload = verifyRefreshToken(refreshToken);
+  } catch {
+    return res.status(401).json({ success: false, error: { code: "UNAUTHORIZED", message: "Invalid refresh token" } });
+  }
+
+  try {
     const dbUser = await prisma.user.findUnique({ where: { id: payload.sub } });
     if (!dbUser) {
       return res.status(401).json({ success: false, error: { code: "UNAUTHORIZED", message: "User not found" } });
@@ -223,7 +242,7 @@ export const refreshHandler = async (req: Request, res: Response) => {
       await prisma.user.update({ where: { id: dbUser.id }, data: { role: normalizedRole } });
     }
     const stored = await prisma.refreshToken.findFirst({
-      where: { tokenHash: hashToken(refreshToken), revokedAt: null, expiresAt: { gt: new Date() } },
+      where: { tokenHash: hashToken(refreshToken), expiresAt: { gt: new Date() } },
     });
     if (!stored) {
       // Token reuse / theft detection: JWT valid but DB row missing -> revoke all
@@ -238,12 +257,30 @@ export const refreshHandler = async (req: Request, res: Response) => {
         error: { code: "UNAUTHORIZED", message: "Refresh token revoked — please sign in again." },
       });
     }
-    await prisma.refreshToken.update({ where: { id: stored.id }, data: { revokedAt: new Date() } });
+    if (stored.revokedAt) {
+      // Multi-tab / quick-reload grace: two tabs may present the same token
+      // while one is rotating it. A recently rotated token can still mint a
+      // new pair; only a genuinely reused old token kills the family.
+      const graceMs = 60_000;
+      if (Date.now() - stored.revokedAt.getTime() > graceMs) {
+        await prisma.refreshToken.updateMany({
+          where: { userId: payload.sub, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+        clearAuthCookies(req, res);
+        return res.status(401).json({
+          success: false,
+          error: { code: "UNAUTHORIZED", message: "Refresh token revoked — please sign in again." },
+        });
+      }
+    } else {
+      await prisma.refreshToken.update({ where: { id: stored.id }, data: { revokedAt: new Date() } });
+    }
     const accessToken = signAccessToken({ sub: payload.sub, role: normalizedRole });
     const newRefreshToken = signRefreshToken({ sub: payload.sub, role: normalizedRole });
     const csrfToken = req.cookies?.csrfToken || createCsrfToken();
     await prisma.refreshToken.create({
-      data: { userId: payload.sub, tokenHash: hashToken(newRefreshToken), expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+      data: { userId: payload.sub, tokenHash: hashToken(newRefreshToken), expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) },
     });
     setAuthCookies(req, res, accessToken, newRefreshToken, csrfToken);
     return res.json({
@@ -252,6 +289,11 @@ export const refreshHandler = async (req: Request, res: Response) => {
       message: "Refreshed",
     });
   } catch {
-    return res.status(401).json({ success: false, error: { code: "UNAUTHORIZED", message: "Invalid refresh token" } });
+    // DB/network failure is not proof the session is invalid. Keep cookies and
+    // let the client retry; the cached shell stays visible.
+    return res.status(503).json({
+      success: false,
+      error: { code: "SERVICE_UNAVAILABLE", message: "Could not refresh the session — try again." },
+    });
   }
 };

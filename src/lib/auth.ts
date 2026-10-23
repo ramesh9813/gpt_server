@@ -32,7 +32,7 @@ export const signAccessToken = (payload: JwtPayload) => {
 
 export const signRefreshToken = (payload: JwtPayload) => {
   return jwt.sign(payload, env.JWT_REFRESH_SECRET, {
-    expiresIn: "30d",
+    expiresIn: "365d",
     algorithm: "HS256",
     issuer: JWT_ISSUER,
     audience: JWT_AUDIENCE,

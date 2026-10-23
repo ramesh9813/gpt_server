@@ -4,6 +4,7 @@ import { DRIVE_TOOLS, callDriveTool, type DriveToolDef } from "../connectors/goo
 import {
   buildSearchContextBlock,
   performWebSearchWithProvider,
+  type WebResult,
 } from "../../lib/websearch";
 import { resolveSearchDepth, resolveSearchProvider } from "../../lib/searchSettings";
 import { logger } from "../../lib/logger";
@@ -140,7 +141,7 @@ export const getWebSearchToolDef = (): LlmToolDef => ({
 const runWebSearchTool = async (
   userId: string,
   toolArgs: Record<string, unknown>
-): Promise<string> => {
+): Promise<{ text: string; sources: WebResult[] }> => {
   const rawQuery = typeof toolArgs.query === "string" ? toolArgs.query.trim().slice(0, 500) : "";
   if (!rawQuery) {
     throw Object.assign(new Error("Invalid arguments: missing required field: query"), {
@@ -153,8 +154,8 @@ const runWebSearchTool = async (
     : depth;
   const provider = await resolveSearchProvider(userId);
   const { hits } = await performWebSearchWithProvider(rawQuery, n, provider);
-  if (hits.length === 0) return "No web results found.";
-  return buildSearchContextBlock(rawQuery, hits);
+  if (hits.length === 0) return { text: "No web results found.", sources: [] };
+  return { text: buildSearchContextBlock(rawQuery, hits), sources: hits };
 };
 
 // Parallel orchestration cap: one model turn may fan out this many tool
@@ -165,10 +166,16 @@ export const MAX_PARALLEL_TOOL_CALLS = 8;
 // request order — wall-clock is the slowest tool, not the sum. Invalid args
 // and per-tool failures become inline Error texts (never throw), so one bad
 // call can't sink its siblings.
+export type ToolCallResult = {
+  id: string;
+  text: string;
+  sources?: Array<{ title: string; url: string; snippet?: string; image?: string }>;
+};
+
 export const executeToolCallsParallel = async (
   userId: string,
   calls: Array<{ id: string; name: string; arguments: string }>
-): Promise<Array<{ id: string; text: string }>> => {
+): Promise<ToolCallResult[]> => {
   const capped = calls.filter((c) => c.name).slice(0, MAX_PARALLEL_TOOL_CALLS);
   const settled = await Promise.allSettled(
     capped.map(async (tc) => {
@@ -183,7 +190,12 @@ export const executeToolCallsParallel = async (
         };
       }
       try {
-        return { id: tc.id, text: await executeMcpTool(userId, tc.name, parsedArgs) };
+        const result = await executeMcpToolDetailed(userId, tc.name, parsedArgs);
+        return {
+          id: tc.id,
+          text: result.text,
+          ...(result.sources && result.sources.length > 0 ? { sources: result.sources } : {}),
+        };
       } catch (err: unknown) {
         const msg = (err as { message?: unknown })?.message;
         return { id: tc.id, text: `Error: ${typeof msg === "string" && msg ? msg : "tool execution failed"}` };
@@ -197,22 +209,26 @@ export const executeToolCallsParallel = async (
   );
 };
 
-// Executes one LLM-requested connector tool call and returns plain text for
-// the conversation loop. Throws with code NOT_CONNECTED / UNKNOWN_TOOL /
+// Executes one LLM-requested tool call. Web search also returns its
+// structured hits so the streamer can persist/emit source links; connector
+// tools return text only. Throws with code NOT_CONNECTED / UNKNOWN_TOOL /
 // INVALID_TOOL_ARGS for the caller to translate.
-export const executeMcpTool = async (
+const executeMcpToolDetailed = async (
   userId: string,
   llmToolName: string,
   toolArgs: Record<string, unknown>
-): Promise<string> => {
+): Promise<{ text: string; sources?: WebResult[] }> => {
   let raw: unknown;
+  let sources: WebResult[] | undefined;
   if (llmToolName.startsWith(WEB_PREFIX)) {
     if (llmToolName !== `${WEB_PREFIX}search`) {
       throw Object.assign(new Error(`Unknown web tool: ${llmToolName}`), {
         code: "UNKNOWN_TOOL",
       });
     }
-    raw = await runWebSearchTool(userId, toolArgs);
+    const result = await runWebSearchTool(userId, toolArgs);
+    raw = result.text;
+    sources = result.sources;
   } else if (llmToolName.startsWith(DRIVE_PREFIX)) {
     raw = await callDriveTool(userId, llmToolName.slice(DRIVE_PREFIX.length), toolArgs);
   } else if (llmToolName.startsWith(CANVA_PREFIX)) {
@@ -223,7 +239,17 @@ export const executeMcpTool = async (
     });
   }
   const text = contentToText(raw);
-  return text.length > MAX_TOOL_RESULT_CHARS
-    ? `${text.slice(0, MAX_TOOL_RESULT_CHARS)}\n…[truncated ${text.length - MAX_TOOL_RESULT_CHARS} chars]`
-    : text;
+  return {
+    text:
+      text.length > MAX_TOOL_RESULT_CHARS
+        ? `${text.slice(0, MAX_TOOL_RESULT_CHARS)}\n…[truncated ${text.length - MAX_TOOL_RESULT_CHARS} chars]`
+        : text,
+    ...(sources ? { sources } : {}),
+  };
 };
+
+export const executeMcpTool = async (
+  userId: string,
+  llmToolName: string,
+  toolArgs: Record<string, unknown>
+): Promise<string> => (await executeMcpToolDetailed(userId, llmToolName, toolArgs)).text;
