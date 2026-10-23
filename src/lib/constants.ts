@@ -38,22 +38,13 @@ export type SupportedRunLanguage = (typeof SUPPORTED_RUN_LANGUAGES)[number];
 export const VIDEO_DEADLINE_MS = 8 * 60 * 1000;
 export const VIDEO_MAX_BYTES = 15 * 1024 * 1024;
 
-// ---------- History / prompt budgeting ----------
+// ---------- History payload ----------
+// The full text history is sent every turn; only the first-user-message
+// anchor seed and the recent-keep window (for that anchor) are configured here.
 export const HISTORY = {
-  LONG_LIMIT: 2000,
-  HEAD_LEN: 1000,
-  TAIL_LEN: 1000,
-  COMPACT_LEN: 400,
   ANCHOR_LEN: 200,
   DEFAULT_RECENT_KEEP: 10,
-  DEFAULT_CHAR_BUDGET: 24_000,
-  // Tight budget for low-tier providers (e.g. Groq on_demand ITPM 7000):
-  // keeps history ≈2k tokens so one-liners never 413.
-  TIGHT_CHAR_BUDGET: 8_000,
 } as const;
-
-// Providers whose per-minute input caps need the tight history budget.
-export const LOW_HISTORY_BUDGET_PROVIDERS: readonly string[] = ["groq"];
 
 // ---------- Cache TTLs ----------
 export const CACHE_TTL_MS = 5 * 60 * 1000; // OpenRouter catalog

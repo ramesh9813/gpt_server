@@ -7,7 +7,7 @@ import { parseByokHeadersAsync } from "../../lib/providers";
 import { resolveEffectiveSystemPrompt } from "./artifact";
 import { mergePromptLists, mutedIdsFromRow, promptsFromRow } from "../../lib/tuning";
 import { audioMissingBytes } from "../../lib/fileAttachments";
-import { buildHistoryMessages, resolveHistoryBudget } from "./history";
+import { buildHistoryMessages } from "./history";
 import { wantsMcq } from "./mcq";
 import { wantsImageGeneration, wantsVideo } from "./intents";
 import type { OpenRouterMessage } from "./chat.service";
@@ -180,7 +180,6 @@ router.post(
     const { messages } = buildHistoryMessages(history, {
       systemPrompt: mergedSystemPrompt,
       existingUserMessageId: effectiveUserMessageId,
-      charBudget: resolveHistoryBudget(byok.provider.id),
     });
 
     await prisma.message.update({

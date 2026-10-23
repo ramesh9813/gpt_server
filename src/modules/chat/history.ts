@@ -1,7 +1,7 @@
-// Token-budgeted conversation history (payload only — DB untouched).
-// Rebuilt from DB every turn, never cached per model, so memory survives
-// model switches. Image bytes never count toward the char budget.
-import { HISTORY, LOW_HISTORY_BUDGET_PROVIDERS } from "../../lib/constants";
+// Conversation history payload (rebuilt from DB every turn, never cached per
+// model, so memory survives model switches). The full text history is always
+// sent — nothing is compacted or dropped. Image bytes never ride old turns.
+import { HISTORY } from "../../lib/constants";
 import { prisma } from "../../lib/prisma";
 
 export type OpenRouterTextPart = { type: "text"; text: string };
@@ -15,23 +15,11 @@ export type HistoryRow = {
   videos?: unknown; quiz?: unknown; status?: unknown; files?: unknown;
 };
 export type BuildHistoryOpts = {
-  systemPrompt?: string; existingUserMessageId?: string; recentKeep?: number; charBudget?: number;
+  systemPrompt?: string; existingUserMessageId?: string; recentKeep?: number;
 };
 export type HistoryStats = { promptChars: number; imageCount: number; droppedImages: number; truncated: number; audioCount: number; droppedAudio: number };
 export const DEFAULT_RECENT_KEEP = HISTORY.DEFAULT_RECENT_KEEP;
-export const DEFAULT_CHAR_BUDGET = HISTORY.DEFAULT_CHAR_BUDGET;
 
-// Effective history budget for a turn: low-tier providers (tight per-minute
-// input caps) get the tight budget; everyone else gets the default budget.
-export const resolveHistoryBudget = (providerId?: string | null): number =>
-  providerId &&
-  LOW_HISTORY_BUDGET_PROVIDERS.includes(providerId.trim().toLowerCase())
-    ? HISTORY.TIGHT_CHAR_BUDGET
-    : HISTORY.DEFAULT_CHAR_BUDGET;
-const LONG_LIMIT = HISTORY.LONG_LIMIT;
-const HEAD_LEN = HISTORY.HEAD_LEN;
-const TAIL_LEN = HISTORY.TAIL_LEN;
-const COMPACT_LEN = HISTORY.COMPACT_LEN;
 const ANCHOR_LEN = HISTORY.ANCHOR_LEN;
 type Item = { role: "system" | "user" | "assistant"; text: string; images: string[]; audio: string[] };
 const strArr = (v: unknown): string[] =>
@@ -83,29 +71,15 @@ const quizSummary = (quiz: unknown): string | null => {
     return `Quiz R${String(round)} "${topic}": ${list.length} questions` + (heads.length ? ` (${heads.join(" | ")})` : "");
   } catch { return null; }
 };
-const truncateLong = (t: string): string => {
-  if (t.length <= LONG_LIMIT) return t;
-  const removed = t.length - HEAD_LEN - TAIL_LEN;
-  return `${t.slice(0, HEAD_LEN)}\n…[truncated ${removed} chars]…\n${t.slice(t.length - TAIL_LEN)}`;
-};
-const compact400 = (t: string): string =>
-  t.length <= COMPACT_LEN ? t : `${t.slice(0, 350)}\n…[truncated ${t.length - 350} chars]…`;
 const textLen = (m: OpenRouterMessage): number =>
   typeof m.content === "string" ? m.content.length
-    : m.content.reduce((n, p) => n + (p.type === "text" ? p.text.length : 0), 0);
-const getText = (m: OpenRouterMessage): string =>
-  typeof m.content === "string" ? m.content
-    : m.content.filter((p) => p.type === "text").map((p) => (p as OpenRouterTextPart).text).join("\n");
-const setText = (m: OpenRouterMessage, t: string): void => {
-  if (typeof m.content === "string") m.content = t;
-  else { const p = m.content.find((x) => x.type === "text"); if (p && p.type === "text") p.text = t; }
-};
+  : m.content.reduce((n, p) => n + (p.type === "text" ? p.text.length : 0), 0);
+
 export const buildHistoryMessages = (
   history: unknown,
   opts: BuildHistoryOpts = {},
 ): { messages: OpenRouterMessage[]; stats: HistoryStats } => {
   const recentKeep = opts.recentKeep ?? DEFAULT_RECENT_KEEP;
-  const charBudget = opts.charBudget ?? DEFAULT_CHAR_BUDGET;
   let truncated = 0;
   let droppedImages = 0;
   let droppedAudio = 0;
@@ -159,10 +133,6 @@ export const buildHistoryMessages = (
   });
   const imageCount = lastImg >= 0 ? items[lastImg].images.length : 0;
   const audioCount = lastAud >= 0 ? items[lastAud].audio.length : 0;
-  for (const it of items) {
-    const t = truncateLong(it.text);
-    if (t !== it.text) { it.text = t; truncated++; }
-  }
   const sysIdx = items.map((it, i) => (it.role === "system" ? i : -1)).filter((i) => i >= 0);
   const keepSys = sysIdx.length ? sysIdx[sysIdx.length - 1] : -1;
   const dropSys = new Set(sysIdx.filter((i) => i !== keepSys));
@@ -203,39 +173,7 @@ export const buildHistoryMessages = (
       else messages.unshift(anchor);
     }
   }
-  let promptChars = messages.reduce((n, m) => n + textLen(m), 0);
-  let guard = messages.length * 3 + 16;
-  while (promptChars > charBudget && guard-- > 0) {
-    const recentFrom = Math.max(0, messages.length - recentKeep);
-    let idx = -1;
-    for (let i = 0; i < recentFrom; i++) { if (textLen(messages[i]) > COMPACT_LEN) { idx = i; break; } }
-    if (idx >= 0) {
-      setText(messages[idx], compact400(getText(messages[idx])));
-      truncated++;
-    } else {
-      let best = -1; let bestLen: number = COMPACT_LEN;
-      for (let i = recentFrom; i < messages.length; i++) {
-        const l = textLen(messages[i]);
-        if (l > bestLen) { bestLen = l; best = i; }
-      }
-      if (best >= 0) {
-        setText(messages[best], compact400(getText(messages[best])));
-        truncated++;
-      } else {
-        let drop = -1;
-        for (let i = 0; i < messages.length; i++) {
-          if (messages[i].role !== "system") { drop = i; break; }
-        }
-        if (drop < 0) break;
-        promptChars -= textLen(messages[drop]);
-        messages.splice(drop, 1);
-        truncated++;
-        continue;
-      }
-    }
-    promptChars = messages.reduce((n, m) => n + textLen(m), 0);
-  }
-  promptChars = messages.reduce((n, m) => n + textLen(m), 0);
+  const promptChars = messages.reduce((n, m) => n + textLen(m), 0);
   return { messages, stats: { promptChars, imageCount, droppedImages, truncated, audioCount, droppedAudio } };
 };
 

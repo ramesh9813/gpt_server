@@ -23,7 +23,7 @@ import {
   wantsVideo,
   type OpenRouterMessage,
 } from "./chat.service";
-import { buildHistoryMessages, fetchHistoryRows, resolveHistoryBudget } from "./history";
+import { buildHistoryMessages, fetchHistoryRows } from "./history";
 import { parseByokHeadersAsync } from "../../lib/providers";
 import { streamByokCompletion } from "./byok";
 import directRoutes from "./direct.routes";
@@ -116,10 +116,6 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     }
     selectedModel = resolvedModel.model;
   }
-
-  // History budget for this turn: tight for low-tier providers. Applies to
-  // every model (BYOK + built-in share the builders below).
-  const historyBudget = resolveHistoryBudget(byok?.provider.id);
 
   let userMsgContent = userMessage || "";
   let userImages: string[] = Array.isArray(images) ? images : [];
@@ -338,7 +334,6 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     const { messages, stats } = buildHistoryMessages(history, {
       systemPrompt: mergedSystemPrompt,
       existingUserMessageId: streamUserMessageId,
-      charBudget: historyBudget,
     });
     logger.info(
       { provider: byok.provider.name, model: byok.model, messages: redactForLog(messages as OpenRouterMessage[]), stats, think: think === true },
@@ -427,13 +422,12 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   // Artifact turns continue the NORMAL streaming path below — no special
   // events, no new SSE type.
 
-  // Token-budgeted history (payload only — DB untouched). Rebuilt from DB every
+  // Full history (payload only — DB untouched). Rebuilt from DB every
   // turn so memory survives model switches; retry slices to the resolved user
   // row (streamUserMessageId), which is the fallback id when the client id was stale.
   const { messages, stats } = buildHistoryMessages(history, {
     systemPrompt: mergedSystemPrompt,
     existingUserMessageId: streamUserMessageId,
-    charBudget: historyBudget,
   });
   logger.info(
     { messages: redactForLog(messages as OpenRouterMessage[]), stats },
