@@ -14,6 +14,7 @@ import conversationRoutes from "./modules/conversations/conversations.routes";
 import folderRoutes from "./modules/folders/folders.routes";
 import messageRoutes from "./modules/messages/messages.routes";
 import chatRoutes from "./modules/chat/chat.routes";
+import fileRoutes from "./modules/files/files.routes";
 import modelRoutes from "./modules/models/models.routes";
 import runnerRoutes from "./modules/runner/runner.routes";
 import connectorRoutes from "./modules/connectors/connectors.routes";
@@ -134,6 +135,12 @@ const modelsLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+const fileLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 app.get("/", (_req, res) => {
   res.json({ success: true, message: "ChatGPT API Server is running" });
@@ -162,6 +169,7 @@ app.use("/api/folders", globalLimiter, folderRoutes);
 app.use("/api/conversations", globalLimiter, conversationRoutes);
 app.use("/api/conversations", globalLimiter, messageRoutes);
 app.use("/api/chat", chatLimiter, chatRoutes);
+app.use("/api/files", fileLimiter, fileRoutes);
 app.use("/api/models", modelsLimiter, modelRoutes);
 app.use("/api/runner", runnerLimiter, runnerRoutes);
 app.use("/api/connectors", globalLimiter, connectorRoutes);

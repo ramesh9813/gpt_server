@@ -17,6 +17,7 @@ export const fileAttachmentSchema = z.object({
   // Base64 audio payload (audio/* only): forwarded to the model as native
   // audio input, never inlined into text prompts. ~27MB cap ≈ 20MB file.
   dataUrl: z.string().max(30_000_000).optional(),
+  attachmentId: z.string().min(1).max(64).optional(),
 });
 
 export const fileAttachmentsSchema = z

@@ -19,58 +19,59 @@ enum UserRole {
 }
 
 model User {
-  id           String         @id @default(cuid())
-  email        String         @unique
+  id           String    @id @default(cuid())
+  email        String    @unique
   passwordHash String
   name         String?
-  role         UserRole       @default(user)
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  role         UserRole  @default(user)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
   lastLoginAt  DateTime?
 
-  conversations Conversation[]
-  folders      Folder[]
-  refreshTokens RefreshToken[]
-  settings     UserSettings?
+  conversations   Conversation[]
+  folders         Folder[]
+  refreshTokens   RefreshToken[]
+  settings        UserSettings?
   connectorTokens ConnectorToken[]
+  attachments     Attachment[]
 }
 
 model UserSettings {
-  id                      String    @id @default(cuid())
-  userId                  String    @unique
-  theme                   String    @default("SYSTEM")
-  accentColor             String    @default("#74aa9c")
-  fontScale               String    @default("DEFAULT")
-  brand                   String    @default("default")
-  model                   String    @default("default")
-  imageModel              String    @default("default")
-  videoModel              String    @default("default")
-  pinHeader               Boolean   @default(false)
-  showTopCard             Boolean   @default(true)
-  showScrollJump          Boolean   @default(true)
-  showFollowups           Boolean   @default(true)
-  searchProvider          String    @default("auto")
-  searchDepth             Int       @default(5)
-  appFontSize             Int       @default(18)
-  iconScale               Float     @default(1)
-  devicePhotosFolder      String?   @map("device_photos_folder")
-  deviceScreenshotsFolder String?   @map("device_screenshots_folder")
-  createdAt               DateTime  @default(now())
-  updatedAt               DateTime  @updatedAt
+  id                      String   @id @default(cuid())
+  userId                  String   @unique
+  theme                   String   @default("SYSTEM")
+  accentColor             String   @default("#74aa9c")
+  fontScale               String   @default("DEFAULT")
+  brand                   String   @default("default")
+  model                   String   @default("default")
+  imageModel              String   @default("default")
+  videoModel              String   @default("default")
+  pinHeader               Boolean  @default(false)
+  showTopCard             Boolean  @default(true)
+  showScrollJump          Boolean  @default(true)
+  showFollowups           Boolean  @default(true)
+  searchProvider          String   @default("auto")
+  searchDepth             Int      @default(5)
+  appFontSize             Int      @default(18)
+  iconScale               Float    @default(1)
+  devicePhotosFolder      String?  @map("device_photos_folder")
+  deviceScreenshotsFolder String?  @map("device_screenshots_folder")
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id])
 }
 
 model Folder {
-  id        String   @id @default(cuid())
-  userId    String
-  name      String
-  customPrompt        String?   @db.Text @map("custom_prompt")
-  customPromptEnabled Boolean   @default(true) @map("custom_prompt_enabled")
-  customPrompts       Json?     @map("custom_prompts")
-  pinned              Boolean   @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  userId              String
+  name                String
+  customPrompt        String?  @map("custom_prompt") @db.Text
+  customPromptEnabled Boolean  @default(true) @map("custom_prompt_enabled")
+  customPrompts       Json?    @map("custom_prompts")
+  pinned              Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   user          User           @relation(fields: [userId], references: [id])
   conversations Conversation[]
@@ -79,20 +80,20 @@ model Folder {
 }
 
 model Conversation {
-  id                  String    @id @default(cuid())
-  userId              String
-  folderId            String?
-  title               String
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
-  archivedAt          DateTime?
-  deletedAt           DateTime?
-  pinned              Boolean   @default(false)
-  quizAsked           Json?
-  customPrompt        String?   @db.Text @map("custom_prompt")
-  customPromptEnabled Boolean   @default(true) @map("custom_prompt_enabled")
-  customPrompts       Json?     @map("custom_prompts")
-  mutedFolderPromptIds Json?    @map("muted_folder_prompt_ids")
+  id                   String    @id @default(cuid())
+  userId               String
+  folderId             String?
+  title                String
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  archivedAt           DateTime?
+  deletedAt            DateTime?
+  pinned               Boolean   @default(false)
+  quizAsked            Json?
+  customPrompt         String?   @map("custom_prompt") @db.Text
+  customPromptEnabled  Boolean   @default(true) @map("custom_prompt_enabled")
+  customPrompts        Json?     @map("custom_prompts")
+  mutedFolderPromptIds Json?     @map("muted_folder_prompt_ids")
 
   user     User      @relation(fields: [userId], references: [id])
   folder   Folder?   @relation(fields: [folderId], references: [id])
@@ -103,42 +104,63 @@ model Conversation {
 }
 
 model Message {
-  id             String        @id @default(cuid())
-  conversationId String
-  role           String
-  content        String
-  reasoning      String?
-  images         Json?
-  videos         Json?
-  createdAt      DateTime      @default(now())
-  tokenCount     Int?
-  promptTokens   Int?
+  id               String   @id @default(cuid())
+  conversationId   String
+  role             String
+  content          String
+  reasoning        String?
+  images           Json?
+  videos           Json?
+  createdAt        DateTime @default(now())
+  tokenCount       Int?
+  promptTokens     Int?
   completionTokens Int?
-  model          String?
-  status         String        @default("COMPLETE")
-  error          String?
-  followups      Json?
-  quiz           Json?
+  model            String?
+  status           String   @default("COMPLETE")
+  error            String?
+  followups        Json?
+  quiz             Json?
   // Wall-clock time the assistant turn took (ms), set when the turn settles.
-  durationMs     Int?
+  durationMs       Int?
   // Web-search turns: flag + cited sources [{ title, url }] for the Sources UI.
-  usedSearch     Boolean       @default(false)
-  sources        Json?
+  usedSearch       Boolean  @default(false)
+  sources          Json?
   // File chat: metadata for user-attached files shown in the bubble.
-  files          Json?
+  files            Json?
 
   conversation Conversation @relation(fields: [conversationId], references: [id])
+  attachments  Attachment[]
 
   @@index([conversationId])
 }
 
+// Chat file attachments stored in Neon Object Storage (S3-compatible).
+// The bytes live in the bucket; this row keeps ownership, metadata and the
+// message link so any signed-in device can play/download the file again.
+model Attachment {
+  id         String   @id @default(cuid())
+  userId     String
+  messageId  String?
+  name       String
+  mime       String
+  size       Int
+  storageKey String   @unique
+  createdAt  DateTime @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([messageId])
+}
+
 model RefreshToken {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userId    String
   tokenHash String
   expiresAt DateTime
   revokedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id])
 
@@ -168,13 +190,13 @@ model ConnectorToken {
 // The code_verifier lives here only for the few minutes of the flow,
 // keyed by a hashed state value so the raw state never needs storage.
 model ConnectorOAuthState {
-  id                 String   @id @default(cuid())
-  userId             String
-  provider           String
-  stateHash          String   @unique
-  codeVerifier       String
-  createdAt          DateTime @default(now())
-  expiresAt          DateTime
+  id           String   @id @default(cuid())
+  userId       String
+  provider     String
+  stateHash    String   @unique
+  codeVerifier String
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
 
   @@index([userId])
 }
@@ -183,18 +205,18 @@ model ConnectorOAuthState {
 // at runtime (provider id + base URL + key rules). Merged with the static
 // BYOK_PROVIDERS at serve time; isActive=false hides without deleting.
 model Provider {
-  id               String   @id
-  name             String
-  baseUrl          String
-  kind             String   @default("openai")
-  keyHint          String   @default("your API key")
-  keyPattern       String?
-  keylessModels    Boolean  @default(false)
-  models           String[] @default([])
-  streamUsage      Boolean  @default(false)
-  allModelsFree    Boolean  @default(false)
-  isActive         Boolean  @default(true)
-  createdBy        String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id            String   @id
+  name          String
+  baseUrl       String
+  kind          String   @default("openai")
+  keyHint       String   @default("your API key")
+  keyPattern    String?
+  keylessModels Boolean  @default(false)
+  models        String[] @default([])
+  streamUsage   Boolean  @default(false)
+  allModelsFree Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  createdBy     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }

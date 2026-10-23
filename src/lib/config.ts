@@ -101,6 +101,13 @@ const envSchema = z.object({
     .default("https://www.googleapis.com/auth/drive.readonly"),
   // 64 hex chars (32 bytes) for AES-256-GCM token encryption at rest.
   CONNECTOR_ENCRYPTION_KEY: z.string().default(""),
+  // --- Neon Object Storage (S3-compatible) ---
+  // File attachments are uploaded here and only metadata is kept in Postgres.
+  AWS_ENDPOINT_URL_S3: z.string().default(""),
+  AWS_REGION: z.string().default(""),
+  AWS_ACCESS_KEY_ID: z.string().default(""),
+  AWS_SECRET_ACCESS_KEY: z.string().default(""),
+  NEON_STORAGE_BUCKET: z.string().default(""),
 });
 
 export const env = envSchema.parse(normalizedEnv);
@@ -151,6 +158,17 @@ if (process.env.NODE_ENV === "production") {
   if (!env.OPENROUTER_API_KEY) {
     console.warn(
       "⚠️ [WARN] OPENROUTER_API_KEY is not set. Chat completions will return an error until it is provided in Render environment variables."
+    );
+  }
+  if (
+    !env.AWS_ENDPOINT_URL_S3 ||
+    !env.AWS_REGION ||
+    !env.AWS_ACCESS_KEY_ID ||
+    !env.AWS_SECRET_ACCESS_KEY ||
+    !env.NEON_STORAGE_BUCKET
+  ) {
+    console.warn(
+      "⚠️ [WARN] Neon Object Storage is not configured. File uploads will be disabled until AWS_ENDPOINT_URL_S3, AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and NEON_STORAGE_BUCKET are set."
     );
   }
 }

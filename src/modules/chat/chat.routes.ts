@@ -50,7 +50,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     userMessage?: string;
     existingUserMessageId?: string;
     images?: string[];
-    files?: Array<{ name: string; mime: string; size: number; content: string }>;
+    files?: Array<{ name: string; mime: string; size: number; content: string; dataUrl?: string; attachmentId?: string }>;
     model?: string;
     systemPrompt?: string;
     research?: boolean;
@@ -131,7 +131,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
 
   let userMsgContent = userMessage || "";
   let userImages: string[] = Array.isArray(images) ? images : [];
-  let userFiles: Array<{ name: string; mime: string; size: number; content: string }> = Array.isArray(files) ? files : [];
+  let userFiles: Array<{ name: string; mime: string; size: number; content: string; dataUrl?: string; attachmentId?: string }> = Array.isArray(files) ? files : [];
   // Real user-row id for this turn (retry path) or created below (fresh
   // path) — forwarded so failure events can name both rows for the
   // browser-direct fallback.
@@ -164,7 +164,13 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   } else if (userMessage || userImages.length > 0 || userFiles.length > 0) {
     const prompt = resolveUserPromptForTurn(userMessage, userFiles);
     const filesMeta = userFiles.length > 0
-      ? userFiles.map((f) => ({ name: f.name, mime: f.mime, size: f.size, ...(audioDataUrlOf(f) ? { dataUrl: audioDataUrlOf(f) } : {}) }))
+      ? userFiles.map((f) => ({
+          name: f.name,
+          mime: f.mime,
+          size: f.size,
+          ...(audioDataUrlOf(f) ? { dataUrl: audioDataUrlOf(f) } : {}),
+          ...(f.attachmentId ? { attachmentId: f.attachmentId } : {})
+        }))
       : undefined;
     const createdUserMsg = await prisma.message.create({
       data: {
@@ -178,6 +184,15 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
         status: "COMPLETE",
       } as any,
     });
+    const attachmentIds = userFiles
+      .map((f) => f.attachmentId)
+      .filter((id): id is string => Boolean(id));
+    if (attachmentIds.length > 0) {
+      await prisma.attachment.updateMany({
+        where: { id: { in: attachmentIds }, userId: req.user!.id },
+        data: { messageId: createdUserMsg.id }
+      });
+    }
     streamUserMessageId = createdUserMsg.id;
     // Drive all intent/history off the expanded prompt so files are visible.
     userMsgContent = prompt;

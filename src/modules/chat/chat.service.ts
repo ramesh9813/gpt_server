@@ -69,7 +69,7 @@ export const getStoredImages = (msg: unknown): string[] => {
   return raw.filter((v): v is string => typeof v === "string" && v.startsWith("data:image/"));
 };
 
-export const getStoredFiles = (msg: unknown): Array<{ name: string; mime: string; size: number; content: string }> => {
+export const getStoredFiles = (msg: unknown): Array<{ name: string; mime: string; size: number; content: string; dataUrl?: string; attachmentId?: string }> => {
   const raw = (msg as { files?: unknown }).files;
   if (!Array.isArray(raw)) return [];
   return (raw as any[]).filter(
@@ -79,7 +79,7 @@ export const getStoredFiles = (msg: unknown): Array<{ name: string; mime: string
 
 export const resolveUserPromptForTurn = (
   userMessage: string | undefined,
-  files: Array<{ name: string; mime: string; size: number; content: string }> | undefined
+  files: Array<{ name: string; mime: string; size: number; content: string; dataUrl?: string; attachmentId?: string }> | undefined
 ): string => {
   const list = Array.isArray(files) ? files : [];
   if (list.length === 0) return userMessage ?? "";

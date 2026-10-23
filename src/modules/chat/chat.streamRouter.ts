@@ -46,7 +46,7 @@ export const handleStream = async (req: Request, res: Response) => {
 
   let userMsgContent = userMessage || "";
   let userImages: string[] = Array.isArray(images) ? images : [];
-  let userFiles: Array<{ name: string; mime: string; size: number; content: string }> = Array.isArray(files) ? files : [];
+  let userFiles: Array<{ name: string; mime: string; size: number; content: string; dataUrl?: string; attachmentId?: string }> = Array.isArray(files) ? files : [];
   let streamUserMessageId: string | undefined = existingUserMessageId;
 
   if (existingUserMessageId) {
@@ -65,10 +65,23 @@ export const handleStream = async (req: Request, res: Response) => {
     userFiles = getStoredFiles(existingMessage);
   } else if (userMessage || userImages.length > 0 || userFiles.length > 0) {
     const prompt = resolveUserPromptForTurn(userMessage, userFiles);
-    const filesMeta = userFiles.length > 0 ? userFiles.map((f) => ({ name: f.name, mime: f.mime, size: f.size, ...(audioDataUrlOf(f) ? { dataUrl: audioDataUrlOf(f) } : {}) })) : undefined;
+    const filesMeta = userFiles.length > 0 ? userFiles.map((f) => ({
+      name: f.name,
+      mime: f.mime,
+      size: f.size,
+      ...(audioDataUrlOf(f) ? { dataUrl: audioDataUrlOf(f) } : {}),
+      ...(f.attachmentId ? { attachmentId: f.attachmentId } : {})
+    })) : undefined;
     const created = await prisma.message.create({
       data: { conversationId, role: "USER", content: prompt, images: userImages.length > 0 ? userImages : undefined, ...(filesMeta ? { files: filesMeta as any } : {}), status: "COMPLETE" } as any,
     });
+    const attachmentIds = userFiles.map((f) => f.attachmentId).filter((id): id is string => Boolean(id));
+    if (attachmentIds.length > 0) {
+      await prisma.attachment.updateMany({
+        where: { id: { in: attachmentIds }, userId: (req as any).user!.id },
+        data: { messageId: created.id }
+      });
+    }
     streamUserMessageId = created.id;
     userMsgContent = prompt;
   }
