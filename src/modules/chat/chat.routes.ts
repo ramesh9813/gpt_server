@@ -43,7 +43,6 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     artifact,
     webSearch,
     think,
-    promptOnly,
   }: {
     conversationId: string;
     userMessage?: string;
@@ -56,7 +55,6 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     artifact?: boolean;
     webSearch?: boolean;
     think?: boolean;
-    promptOnly?: boolean;
   } = req.body;
 
   const conversation = await prisma.conversation.findFirst({
@@ -278,16 +276,6 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
     mutedIdsFromRow(conversation)
   );
 
-  // Prompt-only mode: drop past history — the turn is just this input plus
-  // the custom prompt (system). The current user row is always kept so the
-  // model still sees what was asked.
-  const scopedHistory =
-    promptOnly === true && streamUserMessageId
-      ? history.filter(
-          (r) => String((r as { id?: unknown })?.id ?? "") === streamUserMessageId
-        )
-      : history;
-
   // BYOK turn: plain-text chat streamed from the user's own provider key.
   // Image/video turns stay on built-in models (owner/admin only); general-key
   // users get a plain-text hint instead. Nothing below changes when BYOK
@@ -347,7 +335,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
         images: userImages,
       });
     }
-    const { messages, stats } = buildHistoryMessages(scopedHistory, {
+    const { messages, stats } = buildHistoryMessages(history, {
       systemPrompt: mergedSystemPrompt,
       existingUserMessageId: streamUserMessageId,
       charBudget: historyBudget,
@@ -442,7 +430,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
   // Token-budgeted history (payload only — DB untouched). Rebuilt from DB every
   // turn so memory survives model switches; retry slices to the resolved user
   // row (streamUserMessageId), which is the fallback id when the client id was stale.
-  const { messages, stats } = buildHistoryMessages(scopedHistory, {
+  const { messages, stats } = buildHistoryMessages(history, {
     systemPrompt: mergedSystemPrompt,
     existingUserMessageId: streamUserMessageId,
     charBudget: historyBudget,

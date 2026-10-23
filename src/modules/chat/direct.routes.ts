@@ -19,7 +19,6 @@ const prepareSchema = z.object({
   assistantMessageId: z.string(),
   existingUserMessageId: z.string(),
   artifact: z.boolean().optional(),
-  promptOnly: z.boolean().optional(),
 });
 
 // POST /api/chat/direct-prepare — browser-direct fallback for firewalled
@@ -40,7 +39,6 @@ router.post(
       assistantMessageId,
       existingUserMessageId,
       artifact,
-      promptOnly,
     } = req.body as z.infer<typeof prepareSchema>;
 
     const conversation = await prisma.conversation.findFirst({
@@ -179,14 +177,7 @@ router.post(
       where: { conversationId },
       orderBy: { createdAt: "asc" },
     });
-    // Prompt-only mode: current turn only (same scoping as /stream).
-    const scopedHistory =
-      promptOnly === true
-        ? history.filter(
-            (r) => String((r as { id?: unknown })?.id ?? "") === effectiveUserMessageId
-          )
-        : history;
-    const { messages } = buildHistoryMessages(scopedHistory, {
+    const { messages } = buildHistoryMessages(history, {
       systemPrompt: mergedSystemPrompt,
       existingUserMessageId: effectiveUserMessageId,
       charBudget: resolveHistoryBudget(byok.provider.id),
