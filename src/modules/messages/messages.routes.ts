@@ -24,10 +24,16 @@ const quizQuestionSchema = z.object({
 const quizSchema = z
   .object({
     round: z.number().int().min(1).optional(),
-    topic: z.string().max(200).optional(),
+    // Display-only echo of the stored topic; must tolerate any length the
+    // generator stored or the whole PATCH (and with it the user's answers)
+    // is rejected.
+    topic: z.string().max(500).optional(),
     questions: z.array(quizQuestionSchema).max(50).optional(),
-    // Allow selection tracking fields added by the client
-    selections: z.record(z.number().int()).optional(),
+    // Client selection tracking: the chosen option index (or null) per
+    // question — the exact QuizRound.selections array shape. The previous
+    // record schema rejected it, so every answer PATCH failed silently and
+    // the next refetch rendered answered rounds as unanswered.
+    selections: z.array(z.number().int().min(0).max(3).nullable()).max(50).optional(),
     score: z.number().int().optional(),
   })
   .passthrough();
