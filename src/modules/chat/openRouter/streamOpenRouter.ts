@@ -421,13 +421,11 @@ export const streamOpenRouterCompletion = async (
       assistantContent += "\n\n…[cut off at the output limit — send “continue” for the rest]";
       sendEvent("token", { delta: "\n\n…[cut off at the output limit — send “continue” for the rest]" });
     }
-    // One list only: a model-written trailing Sources section is swapped for
-    // the canonical URL list, otherwise the footer is appended as before.
-    const withFooter = ensureSingleSourcesSection(assistantContent, sources);
-    if (withFooter !== assistantContent) {
-      sendEvent("token", { delta: withFooter.slice(assistantContent.length) });
-      assistantContent = withFooter;
-    }
+    // Canonicalize a model-written trailing Sources section only — never
+    // append a footer. The Sources list below the answer renders from the
+    // persisted `sources` row on the client (same rule as the BYOK path), so
+    // the "Show search sources" setting controls it for every provider.
+    assistantContent = ensureSingleSourcesSection(assistantContent, sources, false);
     await prisma.message.update({
       where: { id: assistantMessageId },
       data: {
