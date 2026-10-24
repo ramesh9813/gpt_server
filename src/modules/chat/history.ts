@@ -55,7 +55,7 @@ const audioFormatOf = (dataUrl: string): string => {
 // gateways surface as [NO AUDIO RECEIVED], real listeners answer truly.
 export const AUDIO_LISTEN_MARKER =
   "[An audio clip is attached as native audio input. Base your answer ONLY on what you actually hear in it. If you receive no audible audio, reply with exactly: [NO AUDIO RECEIVED] and nothing else.]";
-const quizSummary = (quiz: unknown): string | null => {
+export const quizSummary = (quiz: unknown): string | null => {
   try {
     const q = typeof quiz === "string" ? JSON.parse(quiz) : quiz;
     if (!q || typeof q !== "object") return null;

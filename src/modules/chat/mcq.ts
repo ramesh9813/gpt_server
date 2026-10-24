@@ -4,6 +4,7 @@ import { prisma } from "../../lib/prisma";
 import { env } from "../../lib/config";
 import { sseHead, sseSend, sseEnd, finishTextReply } from "./sse";
 import { logger } from "../../lib/logger";
+import { quizSummary } from "./history";
 import type { ByokRequest } from "../../lib/byok";
 import { callByokText } from "./byokCall";
 import { isVisionRejection } from "./byokRequest";
@@ -89,6 +90,10 @@ export type McqReplyOpts = {
   // Attached image dataURLs: the quiz is generated ON the pictures — content
   // is extracted from them first, then questions are written from it.
   images?: string[];
+  // Recent conversation rows (route's fetchHistoryRows): the generator gets
+  // them as a transcript so asks like "the previous topic", "that image" or
+  // "the pdf I sent" resolve against what was actually discussed.
+  history?: unknown[];
 };
 
 const MCQ_REPEAT_BYPASS = /repeat|shuffle|again/i;
@@ -97,6 +102,94 @@ const MCQ_REPEAT_BYPASS = /repeat|shuffle|again/i;
 // optional count or "on <topic>" after it). The real topic resolves from the
 // latest quiz in this conversation — the client only sends the short text.
 const NEXT_ROUND_RE = /^(next round|continue|more)\b/i;
+
+// "the previous/same/last topic" style asks: like next-round, the topic must
+// come from the conversation, not the literal words the user typed.
+const PREV_TOPIC_RE = /\b(previous|same|last|earlier|above|that)\s+topics?\b/i;
+
+// Asks that point at something sent earlier ("that image", "the pdf I
+// attached") — history image bytes ride along only for these.
+const IMAGE_REF_RE = /\b(image|images|picture|photo|screenshot|diagram|chart|graph|slide|scan|attached|attachment|content|pdf|file)\b/i;
+
+// Transcript window for the generator: recent rows, full text, no trimming.
+const MCQ_CONTEXT_ROWS = 20;
+const MCQ_MAX_IMAGES = 5;
+
+const strArr = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length > 0) : [];
+
+/** Latest quiz in this conversation (topic + questions), newest-first scan. */
+const findLastQuiz = async (conversationId: string): Promise<McqQuiz | null> => {
+  const recent = await prisma.message.findMany({
+    where: { conversationId },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+  });
+  return (
+    recent
+      .map((r) => (r as unknown as { quiz?: unknown }).quiz as McqQuiz | null | undefined)
+      .find(
+        (q): q is McqQuiz =>
+          !!q && typeof q.topic === "string" && Array.isArray(q.questions)
+      ) ?? null
+  );
+};
+
+/** Compact transcript of the recent conversation for the quiz generator:
+ *  full text per row (never truncated), quiz rows summarized, image-bearing
+ *  rows marked, newest history image bytes collected for vision extraction. */
+export const buildMcqContext = (
+  history: unknown[]
+): { transcript: string; historyImages: string[] } => {
+  const rows = (Array.isArray(history) ? history : []).filter(
+    (r) => !!r && typeof r === "object"
+  );
+  const window = rows.slice(-MCQ_CONTEXT_ROWS);
+  // Newest image rows win the byte budget (oldest rarely matter for a quiz).
+  const imageBudget = MCQ_MAX_IMAGES;
+  const keepBytes: Set<unknown> = new Set();
+  let spent = 0;
+  for (let i = window.length - 1; i >= 0 && spent < imageBudget; i--) {
+    const imgs = strArr((window[i] as { images?: unknown }).images).filter((s) =>
+      s.startsWith("data:image/")
+    );
+    if (imgs.length > 0) {
+      keepBytes.add(window[i]);
+      spent += imgs.length;
+    }
+  }
+  const historyImages: string[] = [];
+  const lines: string[] = [];
+  for (const r of window) {
+    const row = r as {
+      role?: unknown; content?: unknown; images?: unknown; videos?: unknown;
+      quiz?: unknown; status?: unknown; files?: unknown;
+    };
+    const role = row.role === "ASSISTANT" ? "assistant" : "user";
+    const raw = typeof row.content === "string" ? row.content : "";
+    const imgs = strArr(row.images);
+    const vids = strArr(row.videos);
+    const quiz = quizSummary(row.quiz);
+    let text = raw;
+    if (quiz) text = text ? `${text}\n${quiz}` : quiz;
+    if (role === "assistant" && (imgs.length > 0 || vids.length > 0)) {
+      const media: string[] = [];
+      if (imgs.length > 0) media.push(`[generated image for "${text.trim().slice(0, 120)}"]`);
+      if (vids.length > 0) media.push("[generated video]");
+      text = media.join("\n");
+    }
+    if (role === "user" && imgs.length > 0) {
+      text = `${text}${text ? "\n" : ""}[attached ${imgs.length} image(s)]`;
+      if (keepBytes.has(r)) historyImages.push(...imgs.filter((s) => s.startsWith("data:image/")));
+    }
+    if (!text.trim()) continue;
+    lines.push(`${role}: ${text}`);
+  }
+  return {
+    transcript: lines.join("\n\n"),
+    historyImages: historyImages.slice(0, MCQ_MAX_IMAGES),
+  };
+};
 
 const ANSWER_SPREAD_LINE =
   `DISTRIBUTE the correct answers evenly across all four positions ` +
@@ -295,23 +388,37 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       if (parsed.cleanTopic && !/^\d+\s*$/.test(rest)) roundTopic = parsed.cleanTopic;
     }
     if (roundTopic === effectiveTopic) {
-      const recent = await prisma.message.findMany({
-        where: { conversationId },
-        orderBy: { createdAt: "desc" },
-        take: 10,
-      });
-      const lastQuiz = recent
-        .map((r) => (r as unknown as { quiz?: unknown }).quiz as McqQuiz | null | undefined)
-        .find(
-          (q): q is McqQuiz =>
-            !!q && typeof q.topic === "string" && Array.isArray(q.questions)
-        );
+      const lastQuiz = await findLastQuiz(conversationId);
       if (!lastQuiz) {
         return finishText("Start a quiz first — e.g. `mcq solar system` — then say `mcq next round`.");
       }
       roundTopic = lastQuiz.topic;
     }
   }
+
+  // "the previous/same/last topic" asks resolve like a continuation round:
+  // the words the user typed must never become the quiz topic themselves.
+  if (!continuation && PREV_TOPIC_RE.test(cleanTopic)) {
+    const lastQuiz = await findLastQuiz(conversationId);
+    if (lastQuiz) {
+      roundTopic = lastQuiz.topic;
+      continuation = true;
+    }
+  }
+
+  // Generator context: a transcript of the recent conversation so asks like
+  // "that image", "the pdf I sent" or "the previous topic" resolve against
+  // what was actually discussed. History image bytes ride along only when
+  // this turn has none and the ask references earlier content.
+  const { transcript, historyImages } = buildMcqContext(opts.history ?? []);
+  const contextImages =
+    quizImages.length === 0 && historyImages.length > 0 && IMAGE_REF_RE.test(cleanTopic)
+      ? historyImages
+      : [];
+  const allQuizImages = [...quizImages, ...contextImages].slice(0, MCQ_MAX_IMAGES);
+  const contextSystem = transcript
+    ? `Recent conversation (resolve the quiz ask against this — when it refers to "the previous topic", an image, a document or any earlier content, ground every question in exactly that content):\n\n${transcript}`
+    : "";
 
   try {
     const bypassExclusion = MCQ_REPEAT_BYPASS.test(effectiveTopic);
@@ -333,7 +440,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
     // with the exact reason instead of a generic error — recorded here.
     const visionRejection: { current: { status: number; body: string } | null } = { current: null };
     const noteVisionRejection = (status: number, body: string): void => {
-      if (quizImages.length > 0 && !visionRejection.current && isVisionRejection(status, body)) {
+      if (allQuizImages.length > 0 && !visionRejection.current && isVisionRejection(status, body)) {
         visionRejection.current = { status, body };
       }
     };
@@ -342,22 +449,27 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       const askPrompt = buildMcqPrompt(topicForPrompt, askCount, askExclusion, {
         round,
         continuation,
-        hasImages: quizImages.length > 0,
+        hasImages: allQuizImages.length > 0,
       });
       const tuning = typeof opts.systemPrompt === "string" ? opts.systemPrompt.trim() : "";
       const askMaxTokens = Math.min(8000, Math.max(2000, askCount * 250));
       // Image parts ride alongside the prompt so the model extracts content
       // from the pictures first, then writes questions from it.
-      const imageParts = quizImages.map((url) => ({ type: "image_url" as const, image_url: { url } }));
-      const tuningBlock = tuning ? [{ role: "system", content: tuning }] : [];
+      const imageParts = allQuizImages.map((url) => ({ type: "image_url" as const, image_url: { url } }));
+      const contextBlock = contextSystem ? [{ role: "system" as const, content: contextSystem }] : [];
+      const tuningBlock = tuning ? [{ role: "system" as const, content: tuning }] : [];
       // BYOK: ask the user's provider directly (same prompt + parsing).
       if (opts.byok) {
-        const text = await callByokText(opts.byok, tuning ? `${tuning}\n\n${askPrompt}` : askPrompt, {
-          maxTokens: askMaxTokens,
-          temperature: 0.7,
-          images: quizImages,
-          onHttpError: (status, body) => noteVisionRejection(status, body),
-        });
+        const text = await callByokText(
+          opts.byok,
+          [contextSystem, tuning, askPrompt].filter(Boolean).join("\n\n"),
+          {
+            maxTokens: askMaxTokens,
+            temperature: 0.7,
+            images: allQuizImages,
+            onHttpError: (status, body) => noteVisionRejection(status, body),
+          }
+        );
         return text ? parseMcqText(text) : null;
       }
       try {
@@ -372,6 +484,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
           body: JSON.stringify({
             model: selectedModel,
             messages: [
+              ...contextBlock,
               ...tuningBlock,
               {
                 role: "user",
@@ -447,12 +560,13 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       const askPrompt = buildMcqPrompt(topicForPrompt, askCount, askExclusion, {
         round,
         continuation,
-        hasImages: quizImages.length > 0,
+        hasImages: allQuizImages.length > 0,
       });
       const tuning = typeof opts.systemPrompt === "string" ? opts.systemPrompt.trim() : "";
       const askMaxTokens = Math.min(8000, Math.max(2000, askCount * 250));
-      const imageParts = quizImages.map((url) => ({ type: "image_url" as const, image_url: { url } }));
-      const tuningBlock = tuning ? [{ role: "system", content: tuning }] : [];
+      const imageParts = allQuizImages.map((url) => ({ type: "image_url" as const, image_url: { url } }));
+      const contextBlock = contextSystem ? [{ role: "system" as const, content: contextSystem }] : [];
+      const tuningBlock = tuning ? [{ role: "system" as const, content: tuning }] : [];
       const askUserTurn = {
         role: "user",
         content: imageParts.length > 0 ? [{ type: "text", text: askPrompt }, ...imageParts] : askPrompt,
@@ -470,7 +584,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
         };
         body = {
           model: opts.byok.model,
-          messages: [...tuningBlock, askUserTurn],
+          messages: [...contextBlock, ...tuningBlock, askUserTurn],
           max_tokens: askMaxTokens,
           temperature: 0.7,
           stream: true,
@@ -485,7 +599,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
         };
         body = {
           model: selectedModel,
-          messages: [...tuningBlock, askUserTurn],
+          messages: [...contextBlock, ...tuningBlock, askUserTurn],
           max_tokens: askMaxTokens,
           temperature: 0.7,
           stream: true,
@@ -530,7 +644,7 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
         return null;
       }
       if (!response.ok || !response.body) {
-        if (quizImages.length > 0 && !response.ok) {
+        if (allQuizImages.length > 0 && !response.ok) {
           try {
             noteVisionRejection(response.status, await response.text());
           } catch {
