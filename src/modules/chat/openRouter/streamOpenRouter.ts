@@ -3,12 +3,13 @@ import { prisma } from "../../../lib/prisma";
 import { env } from "../../../lib/config";
 import { logger } from "../../../lib/logger";
 import { TOKEN } from "../../../lib/constants";
-import { askModelText, generateFollowups, isFollowupsEnabled } from "../followups";
+import { generateFollowups, isFollowupsEnabled } from "../followups";
 import { isTokenLimitRejection } from "../byokRequest";
 import { getAvailableTools, getWebSearchToolDef, executeToolCallsParallel, MAX_PARALLEL_TOOL_CALLS, type LlmToolDef } from "../../llm/toolBridge";
 import { RESEARCH_SYSTEM_PROMPT, WEB_SEARCH_SYSTEM_PROMPT } from "../chatPrompts";
 import { redactForLog, type OpenRouterMessage } from "../chatMappers";
-import { buildSearchContextBlock, deepResearchSearch, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages } from "../../../lib/websearch";
+import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages } from "../../../lib/websearch";
+import { openRouterAgentLlm, runDeepResearch } from "../deepResearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../../lib/youtubeTranscript";
 import { fetchLinkedPages } from "../../../lib/pageContent";
@@ -194,38 +195,51 @@ export const streamOpenRouterCompletion = async (
         if (research === true) searchDepth = researchSearchDepth(searchDepth);
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
-        sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
-        const { hits: rawHits } = research === true
-          // Layered deep research on the current model: search → evaluate →
-          // deepen → evaluate, then the final report. No model check.
-          ? (await deepResearchSearch({
-              query,
-              depth: searchDepth,
-              provider: searchProvider,
-              askModel: (prompt) => askModelText(selectedModel, prompt),
-              onStage: (text) => sendEvent("stage", { text }),
-              isAborted: () => controller.signal.aborted,
-            })).hits
-          : (await performWebSearchWithProvider(query, searchDepth, searchProvider)).hits;
-        // Photos only on image-intent turns — every other search stays a fast,
-        // imageless text path (no og:image fetches at all).
-        const hits = wantsSearchImages(query) ? await enrichWithImages(rawHits) : rawHits;
-        hits.forEach((h, i) =>
-          sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url, h.snippet) })
-        );
-        const photoCount = hits.filter((h) => h.image).length;
-        if (photoCount > 0) sendEvent("stage", { text: `Adding ${photoCount} photo${photoCount === 1 ? "" : "s"}…` });
-        for (const h of hits) {
-          if (!sourceMap.has(h.url)) {
-            sourceMap.set(h.url, { url: h.url, title: h.title, ...(h.image ? { image: h.image } : {}) });
+        if (research !== true) sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
+        if (research === true) {
+          // Agent pipeline: PLANNER splits the question, RESEARCHERS run in
+          // parallel (web_search + fetch_page tools), an adversarial VERIFIER
+          // turns gaps into targeted re-research. The streaming call below is
+          // the WRITER — it writes the report from the verified-findings brief.
+          const { brief, sources } = await runDeepResearch({
+            question: query,
+            provider: searchProvider,
+            depth: searchDepth,
+            llm: openRouterAgentLlm(selectedModel),
+            onStage: (text) => sendEvent("stage", { text }),
+            onSource: (s) => {
+              if (!sourceMap.has(s.url)) sourceMap.set(s.url, { url: s.url, title: s.title });
+            },
+            isAborted: () => controller.signal.aborted,
+          });
+          if (sources.length > 0) {
+            sendEvent("sources", { messageId: assistantMessageId, sources });
           }
-        }
-        if (hits.length > 0) {
-          const block = buildSearchContextBlock(query, hits);
-          searchMessages = [
-            { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${block}` },
-            ...messages,
-          ];
+          if (brief) {
+            searchMessages = [{ role: "system", content: brief }, ...messages];
+          }
+        } else {
+          const rawHits = (await performWebSearchWithProvider(query, searchDepth, searchProvider)).hits;
+          // Photos only on image-intent turns — every other search stays a fast,
+          // imageless text path (no og:image fetches at all).
+          const hits = wantsSearchImages(query) ? await enrichWithImages(rawHits) : rawHits;
+          hits.forEach((h, i) =>
+            sendEvent("stage", { text: stageLineForSource(i, hits.length, h.title, h.url, h.snippet) })
+          );
+          const photoCount = hits.filter((h) => h.image).length;
+          if (photoCount > 0) sendEvent("stage", { text: `Adding ${photoCount} photo${photoCount === 1 ? "" : "s"}…` });
+          for (const h of hits) {
+            if (!sourceMap.has(h.url)) {
+              sourceMap.set(h.url, { url: h.url, title: h.title, ...(h.image ? { image: h.image } : {}) });
+            }
+          }
+          if (hits.length > 0) {
+            const block = buildSearchContextBlock(query, hits);
+            searchMessages = [
+              { role: "system", content: `${WEB_SEARCH_SYSTEM_PROMPT}\n\n${block}` },
+              ...messages,
+            ];
+          }
         }
       } catch (err) {
         logger.warn({ err }, "Universal web search failed, continuing without results");

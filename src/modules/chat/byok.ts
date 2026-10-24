@@ -8,13 +8,13 @@ import type { ByokRequest } from "../../lib/byok";
 import { isFirewallChallengeBody } from "../../lib/byok";
 import { logger } from "../../lib/logger";
 import { generateByokFollowups, isFollowupsEnabled } from "./followups";
-import { callByokText } from "./byokCall";
 import { buildByokStreamRequest, byokErrorMessage, hasAudioContent, hasMultimodalContent, isTokenLimitRejection, isVisionRejection, stripImageParts } from "./byokRequest";
 import { extractNonStreamingContent, extractStreamError } from "./byok/parsers";
 import type { OpenRouterMessage } from "./chat.service";
 import { WEB_SEARCH_SYSTEM_PROMPT } from "./chat.service";
 import { RESEARCH_SYSTEM_PROMPT } from "./chatPrompts";
-import { buildSearchContextBlock, deepResearchSearch, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages, type WebResult } from "../../lib/websearch";
+import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages, type WebResult } from "../../lib/websearch";
+import { byokAgentLlm, runDeepResearch } from "./deepResearch";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
 import { SEARCH_DEPTH_DEFAULT, researchSearchDepth, resolveSearchDepth, resolveSearchProvider, searchProviderLabel } from "../../lib/searchSettings";
@@ -162,19 +162,37 @@ export const streamByokCompletion = async (
         if (research === true) searchDepth = researchSearchDepth(searchDepth);
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
-        sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
-        const rawHits: WebResult[] = research === true
-          // Layered deep research on the current model: search → evaluate →
-          // deepen → evaluate, then the final report. No model check.
-          ? (await deepResearchSearch({
-              query,
-              depth: searchDepth,
-              provider: searchProvider,
-              askModel: (prompt) => callByokText(byok, prompt, { maxTokens: 300, temperature: 0.3 }).then((t) => t ?? ""),
-              onStage: (text) => sendEvent("stage", { text }),
-              isAborted: () => controller.signal.aborted,
-            })).hits
-          : (await performWebSearchWithProvider(query, searchDepth, searchProvider)).hits;
+        if (research !== true) sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
+        let rawHits: WebResult[];
+        if (research === true) {
+          // Agent pipeline (planner → parallel researchers → verifier), same
+          // as the built-in path; OpenAI-shaped BYOK providers get real tool
+          // calling, other kinds use the search-first researcher. The
+          // streaming call below writes the report from the findings brief.
+          const { brief, sources } = await runDeepResearch({
+            question: query,
+            provider: searchProvider,
+            depth: searchDepth,
+            llm: byokAgentLlm(byok),
+            onStage: (text) => sendEvent("stage", { text }),
+            onSource: (s) => {
+              if (!sourceMap.has(s.url)) sourceMap.set(s.url, { url: s.url, title: s.title });
+            },
+            isAborted: () => controller.signal.aborted,
+          });
+          if (sources.length > 0) {
+            sendEvent("sources", { messageId: assistantMessageId, sources });
+          }
+          rawHits = [];
+          if (brief) {
+            searchMessages = [
+              { role: "system", content: `${RESEARCH_SYSTEM_PROMPT}\n\n${brief}` },
+              ...messages,
+            ];
+          }
+        } else {
+          rawHits = (await performWebSearchWithProvider(query, searchDepth, searchProvider)).hits;
+        }
         // Photos only on image-intent turns — every other search stays a fast,
         // imageless text path (no og:image fetches at all).
         const hits = wantsSearchImages(query) ? await enrichWithImages(rawHits) : rawHits;

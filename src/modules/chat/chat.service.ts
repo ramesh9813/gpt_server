@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { env } from "../../lib/config";
-import { askModelText, generateFollowups, isFollowupsEnabled } from "./followups";
+import { generateFollowups, isFollowupsEnabled } from "./followups";
 import {
   getAvailableTools,
   getWebSearchToolDef,
@@ -14,7 +14,8 @@ import { imageDataUrlSchema, MAX_IMAGES } from "../../lib/imageValidation";
 import { fileAttachmentsSchema } from "../../lib/fileAttachments";
 import { combineFilesIntoPrompt } from "../../lib/fileAttachments";
 import { TOKEN } from "../../lib/constants";
-import { buildSearchContextBlock, deepResearchSearch, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages, type WebResult } from "../../lib/websearch";
+import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages, type WebResult } from "../../lib/websearch";
+import { openRouterAgentLlm, runDeepResearch } from "./deepResearch";
 import { isTokenLimitRejection } from "./byokRequest";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
@@ -305,19 +306,34 @@ export const streamOpenRouterCompletion = async (
         if (research === true) searchDepth = researchSearchDepth(searchDepth);
         const short = query.length > 60 ? `${query.slice(0, 57)}…` : query;
         const pickLabel = searchProvider === "auto" ? "web" : searchProviderLabel(searchProvider);
-        sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
-        const rawHits: WebResult[] = research === true
-          // Layered deep research on the current model: search → evaluate →
-          // deepen → evaluate, then the final report. No model check.
-          ? (await deepResearchSearch({
-              query,
-              depth: searchDepth,
-              provider: searchProvider,
-              askModel: (prompt) => askModelText(selectedModel, prompt),
-              onStage: (text) => sendEvent("stage", { text }),
-              isAborted: () => controller.signal.aborted,
-            })).hits
-          : (await performWebSearchWithProvider(query, searchDepth, searchProvider)).hits;
+        if (research !== true) sendEvent("stage", { text: `Searching ${pickLabel} for “${short}”…` });
+        let rawHits: WebResult[];
+        if (research === true) {
+          // Agent pipeline: PLANNER splits the question, RESEARCHERS run in
+          // parallel (web_search + fetch_page tools), an adversarial VERIFIER
+          // turns gaps into targeted re-research. The streaming call below is
+          // the WRITER — it writes the report from the verified-findings brief.
+          const { brief, sources } = await runDeepResearch({
+            question: query,
+            provider: searchProvider,
+            depth: searchDepth,
+            llm: openRouterAgentLlm(selectedModel),
+            onStage: (text) => sendEvent("stage", { text }),
+            onSource: (s) => {
+              if (!sourceMap.has(s.url)) sourceMap.set(s.url, { url: s.url, title: s.title });
+            },
+            isAborted: () => controller.signal.aborted,
+          });
+          if (sources.length > 0) {
+            sendEvent("sources", { messageId: assistantMessageId, sources });
+          }
+          rawHits = [];
+          if (brief) {
+            searchMessages = [{ role: "system", content: brief }, ...messages];
+          }
+        } else {
+          rawHits = (await performWebSearchWithProvider(query, searchDepth, searchProvider)).hits;
+        }
         // Photos only on image-intent turns — every other search stays a fast,
         // imageless text path (no og:image fetches at all).
         const hits = wantsSearchImages(query) ? await enrichWithImages(rawHits) : rawHits;
