@@ -65,6 +65,13 @@ export const csrfProtect = (
   const csrfCookie = req.cookies?.csrfToken;
   const csrfHeader = req.get("x-csrf-token");
 
+  // Bearer-authenticated request with no CSRF cookie at all (blocked or
+  // never set): there is nothing to double-submit against, and the custom
+  // header cannot be forged cross-site without a CORS preflight anyway.
+  if (hasBearer && !csrfCookie) {
+    return next();
+  }
+
   // The readable CSRF cookie can be dropped by browser privacy settings while
   // the httpOnly refresh cookie still flows. The client keeps a JSON copy of
   // the same token and sends it as a custom header. A custom header cannot be
@@ -77,11 +84,18 @@ export const csrfProtect = (
   }
 
   if (!csrfCookie || !csrfHeader || !timingSafeEqual(csrfCookie, csrfHeader)) {
-    // A long-open tab's header copy can drift from the cookie (rotation by a
-    // refresh in another tab, privacy-capped cookies, a re-login). A dead-end
-    // 403 here used to kill idle chats ("Invalid CSRF token"). Instead, mint
-    // a fresh token, set the readable cookie and return it in the body — the
-    // client retries once with the matching pair and the turn goes through.
+    if (csrfCookie) {
+      // A cookie EXISTS but the header copy drifted (stale tab). Never
+      // rotate here: the client re-reads the readable cookie (its lookup is
+      // cookie-first) and retries with the matching pair. Rotating would
+      // desync clients whose browser rejects Set-Cookie.
+      return res.status(403).json({
+        success: false,
+        error: { code: "CSRF", message: "Invalid CSRF token" },
+      });
+    }
+    // No cookie at all (dropped/cleared): mint one, set it and return it in
+    // the body — the client adopts it and its retry carries a matching pair.
     const fresh = createCsrfToken();
     try {
       res.cookie("csrfToken", fresh, csrfCookieOptions(req));
