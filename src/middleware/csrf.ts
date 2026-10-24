@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { NextFunction, Request, Response } from "express";
+import type { CookieOptions, NextFunction, Request, Response } from "express";
 
 const safeMethods = ["GET", "HEAD", "OPTIONS"];
 // Only truly unauthenticated endpoints skip CSRF. /api/auth/refresh is
@@ -11,10 +11,29 @@ const csrfBypass = new Set([
 ]);
 
 const timingSafeEqual = (a: string, b: string): boolean => {
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
+  const bufA = Buffer.from(a, "utf-8");
+  const bufB = Buffer.from(b, "utf-8");
   if (bufA.length !== bufB.length) return false;
   return crypto.timingSafeEqual(bufA, bufB);
+};
+
+const createCsrfToken = (): string => crypto.randomBytes(32).toString("hex");
+
+// Same cookie shape the auth controller uses (cross-site deployment:
+// SameSite=None + Secure + partitioned; lax in local http).
+const csrfCookieOptions = (req: Request): CookieOptions => {
+  const secure =
+    req.secure ||
+    String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim() === "https";
+  const options: CookieOptions = {
+    httpOnly: false,
+    sameSite: secure ? "none" : "lax",
+    secure,
+    maxAge: 365 * 24 * 60 * 60 * 1000,
+    path: "/",
+  };
+  if (secure) (options as Record<string, unknown>).partitioned = true;
+  return options;
 };
 
 export const csrfProtect = (
@@ -58,9 +77,20 @@ export const csrfProtect = (
   }
 
   if (!csrfCookie || !csrfHeader || !timingSafeEqual(csrfCookie, csrfHeader)) {
+    // A long-open tab's header copy can drift from the cookie (rotation by a
+    // refresh in another tab, privacy-capped cookies, a re-login). A dead-end
+    // 403 here used to kill idle chats ("Invalid CSRF token"). Instead, mint
+    // a fresh token, set the readable cookie and return it in the body — the
+    // client retries once with the matching pair and the turn goes through.
+    const fresh = createCsrfToken();
+    try {
+      res.cookie("csrfToken", fresh, csrfCookieOptions(req));
+    } catch {
+      // cookie best-effort; the body copy still lets the client recover
+    }
     return res.status(403).json({
       success: false,
-      error: { code: "CSRF", message: "Invalid CSRF token" }
+      error: { code: "CSRF", message: "Invalid CSRF token", csrfToken: fresh },
     });
   }
 
