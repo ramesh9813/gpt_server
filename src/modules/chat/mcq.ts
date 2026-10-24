@@ -90,6 +90,9 @@ export type McqReplyOpts = {
   // Attached image dataURLs: the quiz is generated ON the pictures — content
   // is extracted from them first, then questions are written from it.
   images?: string[];
+  // Attached PDF documents (original bytes): ride as native file parts so
+  // "quiz me on this pdf" grounds in the real document.
+  pdfs?: string[];
   // Recent conversation rows (route's fetchHistoryRows): the generator gets
   // them as a transcript so asks like "the previous topic", "that image" or
   // "the pdf I sent" resolve against what was actually discussed.
@@ -456,6 +459,10 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       // Image parts ride alongside the prompt so the model extracts content
       // from the pictures first, then writes questions from it.
       const imageParts = allQuizImages.map((url) => ({ type: "image_url" as const, image_url: { url } }));
+      const pdfParts = (Array.isArray(opts.pdfs) ? opts.pdfs : [])
+        .filter((u) => typeof u === "string" && u.startsWith("data:application/pdf"))
+        .slice(0, 3)
+        .map((u, i) => ({ type: "file" as const, file: { filename: `document-${i + 1}.pdf`, file_data: u } }));
       const contextBlock = contextSystem ? [{ role: "system" as const, content: contextSystem }] : [];
       const tuningBlock = tuning ? [{ role: "system" as const, content: tuning }] : [];
       // BYOK: ask the user's provider directly (same prompt + parsing).
@@ -488,8 +495,8 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
               ...tuningBlock,
               {
                 role: "user",
-                content: imageParts.length > 0
-                  ? [{ type: "text", text: askPrompt }, ...imageParts]
+                content: imageParts.length > 0 || pdfParts.length > 0
+                  ? [{ type: "text", text: askPrompt }, ...imageParts, ...pdfParts]
                   : askPrompt,
               },
             ],
@@ -565,11 +572,15 @@ export const sendMcqReply = async (req: any, res: any, opts: McqReplyOpts) => {
       const tuning = typeof opts.systemPrompt === "string" ? opts.systemPrompt.trim() : "";
       const askMaxTokens = Math.min(8000, Math.max(2000, askCount * 250));
       const imageParts = allQuizImages.map((url) => ({ type: "image_url" as const, image_url: { url } }));
+      const pdfParts = (Array.isArray(opts.pdfs) ? opts.pdfs : [])
+        .filter((u) => typeof u === "string" && u.startsWith("data:application/pdf"))
+        .slice(0, 3)
+        .map((u, i) => ({ type: "file" as const, file: { filename: `document-${i + 1}.pdf`, file_data: u } }));
       const contextBlock = contextSystem ? [{ role: "system" as const, content: contextSystem }] : [];
       const tuningBlock = tuning ? [{ role: "system" as const, content: tuning }] : [];
       const askUserTurn = {
         role: "user",
-        content: imageParts.length > 0 ? [{ type: "text", text: askPrompt }, ...imageParts] : askPrompt,
+        content: imageParts.length > 0 || pdfParts.length > 0 ? [{ type: "text", text: askPrompt }, ...imageParts, ...pdfParts] : askPrompt,
       };
       let url: string;
       let headers: Record<string, string>;

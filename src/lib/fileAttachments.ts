@@ -71,6 +71,36 @@ export const audioDataUrlOf = (f: { mime?: unknown; dataUrl?: unknown }): string
   return f.dataUrl;
 };
 
+// Native PDF payload: the ORIGINAL document bytes (data:application/pdf),
+// never extracted text. ~14M chars ≈ 10MB raw document.
+export const pdfDataUrlOf = (f: { mime?: unknown; dataUrl?: unknown }): string | null => {
+  if (typeof f?.mime !== "string" || f.mime !== "application/pdf") return null;
+  if (typeof f?.dataUrl !== "string" || !f.dataUrl.startsWith("data:application/pdf")) return null;
+  if (f.dataUrl.length > 14_000_000) return null;
+  return f.dataUrl;
+};
+
+// PDF entries that promised native bytes but arrived without a payload
+// (stale client, dropped field): answering from the bare meta note makes
+// the model invent document content — fail loudly so the user re-sends.
+// Intentionally-byteless PDFs (over-limit / unreadable notes) say so in
+// their content and never match here.
+export const pdfMissingBytes = (
+  files: Array<{ name?: unknown; mime?: unknown; dataUrl?: unknown; content?: unknown }> | undefined
+): string[] => {
+  if (!Array.isArray(files) || files.length === 0) return [];
+  const out: string[] = [];
+  for (const f of files) {
+    if ((f as { mime?: unknown })?.mime !== "application/pdf") continue;
+    if (pdfDataUrlOf(f) !== null) continue;
+    const content = typeof (f as { content?: unknown }).content === "string" ? (f as { content: string }).content : "";
+    if (content.includes("attached as the original document")) {
+      if (typeof f.name === "string") out.push(f.name);
+    }
+  }
+  return out;
+};
+
 // Audio entries that need live bytes: no payload AND no legacy
 // "[transcribed audio" text in the prompt. Answering those from a bare meta
 // note makes the model hallucinate — callers fail loudly instead, naming

@@ -5,7 +5,7 @@ import { validateBody } from "../../middleware/validate";
 import { resolveModelForRole, isImageOnlyModel, isVideoOnlyModel } from "../../lib/openrouter";
 import { resolveEffectiveSystemPrompt, wantsArtifact } from "./artifact";
 import { mergePromptLists, mutedIdsFromRow, promptsFromRow } from "../../lib/tuning";
-import { audioDataUrlOf, audioMissingBytes } from "../../lib/fileAttachments";
+import { audioDataUrlOf, audioMissingBytes, pdfDataUrlOf, pdfMissingBytes } from "../../lib/fileAttachments";
 import { logger } from "../../lib/logger";
 import {
   getStoredFiles,
@@ -157,6 +157,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
           mime: f.mime,
           size: f.size,
           ...(audioDataUrlOf(f) ? { dataUrl: audioDataUrlOf(f) } : {}),
+          ...(pdfDataUrlOf(f) ? { dataUrl: pdfDataUrlOf(f) } : {}),
           ...(f.attachmentId ? { attachmentId: f.attachmentId } : {})
         }))
       : undefined;
@@ -198,6 +199,19 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       error: {
         code: "AUDIO_BYTES_MISSING",
         message: `Audio didn't arrive for listening (${names}${missingAudio.length > 2 ? "…" : ""}) — re-send the audio file so the model can hear it.`,
+      },
+    });
+  }
+  // Same honesty for PDFs promised as native documents: a dropped payload
+  // must fail loudly instead of letting the model invent document content.
+  const missingPdfs = pdfMissingBytes(userFiles);
+  if (missingPdfs.length > 0) {
+    const names = missingPdfs.slice(0, 2).join(", ");
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: "PDF_BYTES_MISSING",
+        message: `The PDF didn't arrive (${names}${missingPdfs.length > 2 ? "…" : ""}) — re-send the file so the model can read the original document.`,
       },
     });
   }
@@ -330,6 +344,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
         systemPrompt: mergedSystemPrompt,
         images: userImages,
         history,
+        pdfs: userFiles.map(pdfDataUrlOf).filter((u): u is string => !!u),
       });
     }
     const { messages, stats } = buildHistoryMessages(history, {
@@ -390,6 +405,7 @@ router.post("/stream", requireAuth, validateBody(streamSchema), async (req, res)
       systemPrompt: mergedSystemPrompt,
       images: userImages,
       history,
+      pdfs: userFiles.map(pdfDataUrlOf).filter((u): u is string => !!u),
     });
   }
 

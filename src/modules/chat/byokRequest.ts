@@ -26,6 +26,14 @@ const inputAudioToInline = (input: { data?: unknown; format?: unknown }): Gemini
   return { inline_data: { mime_type: mime, data: input.data } };
 };
 
+// Native PDF document → Gemini inline bytes (application/pdf).
+const pdfFileToInline = (file: { filename?: unknown; file_data?: unknown }): GeminiPart | null => {
+  if (typeof file?.file_data !== "string" || !file.file_data) return null;
+  const match = /^data:application\/pdf;base64,(.+)$/.exec(file.file_data);
+  if (!match) return null;
+  return { inline_data: { mime_type: "application/pdf", data: match[1] } };
+};
+
 const toGeminiPayload = (messages: OpenRouterMessage[]) => {
   const sysParts: string[] = [];
   const contents: Array<{ role: "user" | "model"; parts: GeminiPart[] }> = [];
@@ -52,6 +60,9 @@ const toGeminiPayload = (messages: OpenRouterMessage[]) => {
         } else if (p.type === "input_audio") {
           const inline = inputAudioToInline(p.input_audio);
           if (inline) parts.push(inline);
+        } else if (p.type === "file") {
+          const inline = pdfFileToInline(p.file);
+          if (inline) parts.push(inline);
         } else {
           const inline = dataUrlToInline(p.image_url.url);
           if (inline) parts.push(inline);
@@ -73,7 +84,8 @@ const toGeminiPayload = (messages: OpenRouterMessage[]) => {
 
 type AnthropicPart =
   | { type: "text"; text: string }
-  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
+  | { type: "document"; source: { type: "base64"; media_type: "application/pdf"; data: string } };
 
 const toAnthropicPayload = (messages: OpenRouterMessage[]) => {
   const sysParts: string[] = [];
@@ -100,6 +112,13 @@ const toAnthropicPayload = (messages: OpenRouterMessage[]) => {
         .map((p): AnthropicPart | null => {
           if (p.type === "text")
             return p.text.trim() ? { type: "text", text: p.text } : null;
+          // Native PDF document block (Claude document input).
+          if (p.type === "file") {
+            const match = /^data:application\/pdf;base64,(.+)$/.exec(p.file.file_data);
+            return match
+              ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: match[1] } }
+              : null;
+          }
           // Claude takes no audio: dropped here, but audio turns fail fast
           // with the exact reason before any request is built (see byok.ts).
           if (p.type !== "image_url") return null;
@@ -233,10 +252,14 @@ export const stripImageParts = (
     const audios = (m.content as unknown[]).filter(
       (p) => (p as { type?: unknown })?.type === "input_audio"
     ).length;
+    const pdfs = (m.content as unknown[]).filter(
+      (p) => (p as { type?: unknown })?.type === "file"
+    ).length;
     const text = texts.join("\n").trim() || "Describe the attached image(s) in detail.";
     const notes: string[] = [];
     if (images > 0) notes.push(`[attached image${images > 1 ? "s" : ""} omitted — this model accepts text only]`);
     if (audios > 0) notes.push(`[attached audio omitted — this model accepts text only]`);
+    if (pdfs > 0) notes.push(`[attached pdf${pdfs > 1 ? "s" : ""} omitted — this model accepts text only]`);
     return {
       ...m,
       content: notes.length > 0 ? `${text}\n${notes.join("\n")}` : text,

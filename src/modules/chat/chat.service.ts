@@ -48,7 +48,8 @@ export type StreamRequestBody = z.infer<typeof streamSchema>;
 export type OpenRouterTextPart = { type: "text"; text: string };
 export type OpenRouterImagePart = { type: "image_url"; image_url: { url: string } };
 export type OpenRouterAudioPart = { type: "input_audio"; input_audio: { data: string; format: string } };
-export type OpenRouterContent = string | Array<OpenRouterTextPart | OpenRouterImagePart | OpenRouterAudioPart>;
+export type OpenRouterPdfPart = { type: "file"; file: { filename: string; file_data: string } };
+export type OpenRouterContent = string | Array<OpenRouterTextPart | OpenRouterImagePart | OpenRouterAudioPart | OpenRouterPdfPart>;
 export type OpenRouterMessage = { role: "system" | "user" | "assistant"; content: OpenRouterContent };
 
 export const mapRole = (role: string): OpenRouterMessage["role"] => {

@@ -7,7 +7,10 @@ import { prisma } from "../../lib/prisma";
 export type OpenRouterTextPart = { type: "text"; text: string };
 export type OpenRouterImagePart = { type: "image_url"; image_url: { url: string } };
 export type OpenRouterAudioPart = { type: "input_audio"; input_audio: { data: string; format: string } };
-export type OpenRouterContent = string | Array<OpenRouterTextPart | OpenRouterImagePart | OpenRouterAudioPart>;
+// Original PDF document (OpenAI file part shape): providers that support
+// document input read the real file — never extracted text.
+export type OpenRouterFilePart = { type: "file"; file: { filename: string; file_data: string } };
+export type OpenRouterContent = string | Array<OpenRouterTextPart | OpenRouterImagePart | OpenRouterAudioPart | OpenRouterFilePart>;
 export type OpenRouterMessage = { role: "system" | "user" | "assistant"; content: OpenRouterContent };
 // Loose Prisma Message row — unknown fields ignored, quiz/images/files read defensively.
 export type HistoryRow = {
@@ -17,11 +20,11 @@ export type HistoryRow = {
 export type BuildHistoryOpts = {
   systemPrompt?: string; existingUserMessageId?: string; recentKeep?: number;
 };
-export type HistoryStats = { promptChars: number; imageCount: number; droppedImages: number; truncated: number; audioCount: number; droppedAudio: number };
+export type HistoryStats = { promptChars: number; imageCount: number; droppedImages: number; truncated: number; audioCount: number; droppedAudio: number; droppedPdfs: number };
 export const DEFAULT_RECENT_KEEP = HISTORY.DEFAULT_RECENT_KEEP;
 
 const ANCHOR_LEN = HISTORY.ANCHOR_LEN;
-type Item = { role: "system" | "user" | "assistant"; text: string; images: string[]; audio: string[] };
+type Item = { role: "system" | "user" | "assistant"; text: string; images: string[]; audio: string[]; pdfs: Array<{ name: string; dataUrl: string }> };
 const strArr = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length > 0) : [];
 const storedImages = (v: unknown): string[] => strArr(v).filter((s) => s.startsWith("data:image/"));
@@ -40,7 +43,22 @@ const storedAudio = (v: unknown): string[] => {
   }
   return out;
 };
-// input_audio format from a data:audio/<sub>;base64 URL (mp3/wav native,
+// Native PDF documents ride on files entries ({mime: application/pdf,
+// dataUrl}). Same latest-turn rule as images/audio.
+const storedPdfs = (v: unknown): Array<{ name: string; dataUrl: string }> => {
+  if (!Array.isArray(v)) return [];
+  const out: Array<{ name: string; dataUrl: string }> = [];
+  for (const e of v) {
+    if (!e || typeof e !== "object") continue;
+    const mime = (e as { mime?: unknown }).mime;
+    const dataUrl = (e as { dataUrl?: unknown }).dataUrl;
+    const name = (e as { name?: unknown }).name;
+    if (mime === "application/pdf" && typeof dataUrl === "string" && dataUrl.startsWith("data:application/pdf") && typeof name === "string") {
+      out.push({ name, dataUrl });
+    }
+  }
+  return out;
+};
 // rest passed through — the provider answers exactly if it can't).
 const audioFormatOf = (dataUrl: string): string => {
   const sub = (/^data:audio\/([^;,]+)/.exec(dataUrl)?.[1] ?? "").toLowerCase();
@@ -83,6 +101,7 @@ export const buildHistoryMessages = (
   let truncated = 0;
   let droppedImages = 0;
   let droppedAudio = 0;
+  let droppedPdfs = 0;
   const rows: HistoryRow[] = Array.isArray(history) ? (history as HistoryRow[]) : [];
   let sliced = rows;
   if (opts.existingUserMessageId) {
@@ -98,9 +117,10 @@ export const buildHistoryMessages = (
     const vids = strArr(r?.videos);
     const userImgs = role === "user" ? storedImages(r?.images) : [];
     const userAudio = role === "user" ? storedAudio((r as { files?: unknown })?.files) : [];
+    const userPdfs = role === "user" ? storedPdfs((r as { files?: unknown })?.files) : [];
     const qs = quizSummary(r?.quiz);
-    if (qs && !raw.trim()) { items.push({ role: "assistant", text: qs, images: [], audio: [] }); continue; }
-    if (!raw.trim() && userImgs.length === 0 && userAudio.length === 0 && imgs.length === 0 && vids.length === 0 && !qs) {
+    if (qs && !raw.trim()) { items.push({ role: "assistant", text: qs, images: [], audio: [], pdfs: [] }); continue; }
+    if (!raw.trim() && userImgs.length === 0 && userAudio.length === 0 && userPdfs.length === 0 && imgs.length === 0 && vids.length === 0 && !qs) {
       if (status === "ERROR" || status === "STREAMING") continue;
     }
     if (role === "assistant" && (imgs.length > 0 || vids.length > 0)) {
@@ -108,10 +128,10 @@ export const buildHistoryMessages = (
       const parts: string[] = [];
       if (imgs.length > 0) parts.push(`[generated image for "${cap}"]`);
       if (vids.length > 0) parts.push("[generated video]");
-      items.push({ role, text: parts.join("\n"), images: [], audio: [] });
+      items.push({ role, text: parts.join("\n"), images: [], audio: [], pdfs: [] });
       continue;
     }
-    items.push({ role, text: raw, images: userImgs, audio: userAudio });
+    items.push({ role, text: raw, images: userImgs, audio: userAudio, pdfs: userPdfs });
   }
   let lastImg = -1;
   items.forEach((it, i) => { if (it.images.length > 0) lastImg = i; });
@@ -129,6 +149,17 @@ export const buildHistoryMessages = (
       droppedAudio += it.audio.length;
       it.audio = [];
       it.text += "\n[earlier attached audio omitted]";
+    }
+  });
+  // PDFs follow the same rule: only the latest pdf-bearing turn keeps the
+  // native document bytes (they are large; older turns keep their meta note).
+  let lastPdf = -1;
+  items.forEach((it, i) => { if (it.pdfs.length > 0) lastPdf = i; });
+  items.forEach((it, i) => {
+    if (i !== lastPdf && it.pdfs.length > 0) {
+      droppedPdfs += it.pdfs.length;
+      it.pdfs = [];
+      it.text += "\n[earlier attached pdf omitted]";
     }
   });
   const imageCount = lastImg >= 0 ? items[lastImg].images.length : 0;
@@ -149,7 +180,7 @@ export const buildHistoryMessages = (
   const head = (opts.systemPrompt || "").trim();
   if (head) messages.push({ role: "system", content: head });
   for (const it of kept) {
-    if (it.role === "user" && (it.images.length > 0 || it.audio.length > 0)) {
+    if (it.role === "user" && (it.images.length > 0 || it.audio.length > 0 || it.pdfs.length > 0)) {
       const base = it.text.trim() ? it.text : "Describe the attached image(s) and audio in detail.";
       // Marker rides WITH the audio so the model evaluates the bytes (or
       // reports exactly that it hears nothing) — never invents content.
@@ -160,6 +191,10 @@ export const buildHistoryMessages = (
           { type: "text", text: t },
           ...it.images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
           ...it.audio.map((url) => ({ type: "input_audio" as const, input_audio: { data: url.split(",")[1] ?? url, format: audioFormatOf(url) } })),
+          ...it.pdfs.map((p) => ({
+            type: "file" as const,
+            file: { filename: p.name.toLowerCase().endsWith(".pdf") ? p.name : `${p.name}.pdf`, file_data: p.dataUrl },
+          })),
         ],
       });
     } else messages.push({ role: it.role, content: it.text });
@@ -174,7 +209,7 @@ export const buildHistoryMessages = (
     }
   }
   const promptChars = messages.reduce((n, m) => n + textLen(m), 0);
-  return { messages, stats: { promptChars, imageCount, droppedImages, truncated, audioCount, droppedAudio } };
+  return { messages, stats: { promptChars, imageCount, droppedImages, truncated, audioCount, droppedAudio, droppedPdfs } };
 };
 
 // How many of the newest messages keep their full media payloads.

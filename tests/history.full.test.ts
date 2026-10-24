@@ -3,6 +3,9 @@
 jest.mock("../src/lib/prisma", () => ({ prisma: {} }));
 import { buildHistoryMessages, DEFAULT_RECENT_KEEP } from "../src/modules/chat/history";
 import { streamSchema } from "../src/modules/chat/chat.service";
+import { pdfDataUrlOf, pdfMissingBytes } from "../src/lib/fileAttachments";
+
+const pdfUrl = (n = 8) => `data:application/pdf;base64,${"JUIFUkVDSUZFUi8+".repeat(n)}`;
 
 const long = (n: number) => "x".repeat(n);
 const img = (n: number) => `data:image/png;base64,${"A".repeat(n)}`;
@@ -102,6 +105,53 @@ describe("buildHistoryMessages sends the full history", () => {
     expect(text).toContain('[generated image for "a cat on a sofa"]');
     expect(text).toContain("hello");
     expect(messages.filter((m) => m.role === "assistant")).toHaveLength(1);
+  });
+});
+
+describe("native PDF documents", () => {
+  const pdfRow = (id: string, text: string) => ({
+    id,
+    role: "USER",
+    content: `[PDF: ${text}.pdf (12KB) — attached as the original document; read the attached file natively]`,
+    status: "COMPLETE",
+    files: [{ name: `${text}.pdf`, mime: "application/pdf", size: 12_288, content: "meta", dataUrl: pdfUrl() }],
+  });
+
+  it("attaches the original bytes as a file part on the latest pdf turn", () => {
+    const { messages } = buildHistoryMessages([pdfRow("u1", "invoice")], {});
+    const turn = messages.find((m) => Array.isArray((m as { content?: unknown }).content) && JSON.stringify(m).includes("file_data")) as
+      | { content: Array<Record<string, unknown>> }
+      | undefined;
+    expect(turn).toBeTruthy();
+    const filePart = turn!.content.find((p) => p.type === "file") as { file: { filename: string; file_data: string } };
+    expect(filePart.file.filename).toBe("invoice.pdf");
+    expect(filePart.file.file_data).toBe(pdfUrl());
+  });
+
+  it("keeps bytes only on the LAST pdf turn and marks earlier ones", () => {
+    const { messages, stats } = buildHistoryMessages(
+      [pdfRow("u1", "old"), { id: "a1", role: "ASSISTANT", content: "got it", status: "COMPLETE" }, pdfRow("u2", "new")],
+      {}
+    );
+    const json = messages.map((m) => JSON.stringify(m));
+    expect(json.filter((j) => j.includes("file_data"))).toHaveLength(1);
+    expect(json.some((j) => j.includes("old.pdf") && j.includes("[earlier attached pdf omitted]"))).toBe(true);
+    expect(stats.droppedPdfs).toBe(1);
+  });
+
+  it("validates pdf payloads strictly", () => {
+    expect(pdfDataUrlOf({ mime: "application/pdf", dataUrl: pdfUrl() })).toBe(pdfUrl());
+    expect(pdfDataUrlOf({ mime: "application/pdf", dataUrl: "data:text/plain;base64,AAA" })).toBeNull();
+    expect(pdfDataUrlOf({ mime: "text/plain", dataUrl: pdfUrl() })).toBeNull();
+    expect(pdfDataUrlOf({ mime: "application/pdf" })).toBeNull();
+  });
+
+  it("flags byteless pdfs that promised native bytes, ignores intentional meta notes", () => {
+    const promised = { name: "a.pdf", mime: "application/pdf", content: "[PDF: a.pdf — attached as the original document; read the attached file natively]" };
+    const intentional = { name: "b.pdf", mime: "application/pdf", content: "[PDF: b.pdf — over the 10MB native-attach limit, contents not sent]" };
+    expect(pdfMissingBytes([promised])).toEqual(["a.pdf"]);
+    expect(pdfMissingBytes([intentional])).toEqual([]);
+    expect(pdfMissingBytes([{ ...promised, dataUrl: pdfUrl() }])).toEqual([]);
   });
 });
 
