@@ -316,7 +316,7 @@ export const extractCompleteMcqQuestions = (buffer: string): McqQuestion[] => {
   return out;
 };
 
-const parseMcqText = (text: string): McqQuestion[] | null => {
+export const parseMcqText = (text: string): McqQuestion[] | null => {
   const cleaned = stripCodeFences(text);
   if (!cleaned) return null;
   const tryZod = (raw: unknown): McqQuestion[] | null => {

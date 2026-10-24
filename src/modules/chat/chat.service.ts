@@ -16,6 +16,7 @@ import { combineFilesIntoPrompt } from "../../lib/fileAttachments";
 import { TOKEN } from "../../lib/constants";
 import { buildSearchContextBlock, enrichWithImages, ensureSingleSourcesSection, hasAttachedDocument, performWebSearchWithProvider, stageLineForSource, wantsWebSearch, wantsSearchImages, type WebResult } from "../../lib/websearch";
 import { openRouterAgentLlm, runDeepResearch } from "./deepResearch";
+import { APP_ROUTING_SYSTEM, artifactFenceOf, executeAppTool, getAppToolDefs, isAppToolName, mcqQuizPayload, type AppToolUi } from "./appTools";
 import { isTokenLimitRejection } from "./byokRequest";
 import { extractPageUrls, fetchLinkedPages, pageHost } from "../../lib/pageContent";
 import { extractYouTubeVideoId, fetchVideoTranscriptFor, transcriptUnavailableNote, wantsTranscript } from "../../lib/youtubeTranscript";
@@ -404,15 +405,29 @@ export const streamOpenRouterCompletion = async (
     // Pre-searched turns skip it — no duplicate provider spend.
     const modelSearchTools =
       research !== true && searchMessages === messages ? [getWebSearchToolDef()] : [];
+    // Model-driven app tools (quiz / simulation / artifact): offered on plain
+    // text turns so the model itself routes "quiz me on this", "simulate X",
+    // "build me a page" to the right renderer. Research and artifact turns
+    // have their own dedicated pipelines and prompts.
+    const appTools = !research && !artifact ? getAppToolDefs() : [];
+    const routingHead = appTools.length > 0 ? APP_ROUTING_SYSTEM : null;
     const requestBody: Record<string, unknown> = {
       model: selectedModel,
       messages: research
         ? [{ role: "system", content: RESEARCH_SYSTEM_PROMPT }, ...turnMessages]
-        : useWebTool
-          ? [{ role: "system", content: WEB_SEARCH_SYSTEM_PROMPT }, ...turnMessages]
+        : useWebTool || routingHead
+          ? [
+              {
+                role: "system",
+                content: [routingHead, useWebTool ? WEB_SEARCH_SYSTEM_PROMPT : null]
+                  .filter(Boolean)
+                  .join("\n\n"),
+              },
+              ...turnMessages,
+            ]
           : turnMessages,
-      ...(webTools.length > 0 || toolsForTurn.length > 0 || modelSearchTools.length > 0
-        ? { tools: [...webTools, ...toolsForTurn, ...modelSearchTools], tool_choice: "auto" }
+      ...(webTools.length > 0 || toolsForTurn.length > 0 || modelSearchTools.length > 0 || appTools.length > 0
+        ? { tools: [...webTools, ...toolsForTurn, ...modelSearchTools, ...appTools], tool_choice: "auto" }
         : {}),
       stream: true,
     };
@@ -602,31 +617,54 @@ export const streamOpenRouterCompletion = async (
   try {
     let turnMessages = searchMessages;
     let usage: any = null;
-    // At most one tool round-trip: turn 0 may request connector calls, turn
-    // 1 streams the final answer with their results in context. When no
-    // tools are connected this loop runs exactly once, as before.
+    // First UI payload from an app tool wins (routing rule: at most one per
+    // turn). Rendered after the loop: quiz → quiz event + row, artifact →
+    // ```html:artifact fence the existing panel picks up.
+    let pendingUi: AppToolUi | null = null;
+    // At most one tool round-trip: turn 0 may request tool calls, turn 1
+    // streams the final answer with their results in context (this is also
+    // the single retry a failed app-tool validation gets). When no tools are
+    // requested this loop runs exactly once, as before.
     for (let turn = 0; ; turn += 1) {
       const result = await runTurn(turnMessages);
       if (result.terminal) return;
       usage = result.usage ?? usage;
       const requested = result.toolCalls.filter((c) => c.name).slice(0, MAX_PARALLEL_TOOL_CALLS);
       if (requested.length === 0 || turn >= 1) break;
-      // Web search is a built-in tool and must work even when the user has no
-      // Canva/Drive connector. Connector calls still require a linked account
-      // (and at least one resolved tool) before they are attempted.
-      const connectorRequested = requested.filter((c) => !c.name.startsWith("web__"));
+      // Web search and app tools are built-in and work without connectors.
+      // App tools (quiz/simulation/artifact) execute server-side, validated.
+      // Connector calls still require a linked account (and at least one
+      // resolved tool) before they are attempted.
+      const appRequested = requested.filter((c) => isAppToolName(c.name));
+      let connectorRequested = requested.filter(
+        (c) => !c.name.startsWith("web__") && !isAppToolName(c.name)
+      );
       const toolsResolved = connectorRequested.length > 0 ? await loadCanvaTools() : [];
       if (connectorRequested.length > 0 && (toolsResolved.length === 0 || !canvaUserId)) {
-        break;
+        // Connectors unavailable: still honor app tools in this batch.
+        if (appRequested.length === 0) break;
+        connectorRequested = [];
       }
       const uid = canvaUserId ?? (req as any).user?.id;
       if (!uid) break;
       // Live phase for the client status line; unknown to older clients,
       // which safely ignore unrecognized SSE event types.
       sendEvent("tools", { names: requested.map((c) => c.name) });
-      // Parallel subagents: every call the model fanned out this turn runs
-      // concurrently — wall-clock is the slowest tool, not the sum.
-      const toolResults = await executeToolCallsParallel(uid, requested);
+      // App tools run first — validation errors return to the model as tool
+      // results so turn 1 can fix the call (spec: one retry).
+      const appResults: Array<{ id: string; text: string }> = [];
+      for (const tc of appRequested) {
+        const r = await executeAppTool(tc.name, tc.arguments, { userId: uid, model: selectedModel });
+        appResults.push({ id: tc.id, text: r.resultText });
+        if (r.ui && !pendingUi) pendingUi = r.ui;
+      }
+      // Connector/web tools fan out concurrently — wall-clock is the slowest
+      // tool, not the sum.
+      const toolResults =
+        connectorRequested.length > 0 ? await executeToolCallsParallel(uid, [
+          ...connectorRequested,
+          ...requested.filter((c) => c.name.startsWith("web__")),
+        ]) : [];
       // A model-initiated web search must populate the same source list as the
       // server's pre-search path, otherwise the answer has no URLs to show.
       for (const toolResult of toolResults) {
@@ -675,12 +713,34 @@ export const streamOpenRouterCompletion = async (
             function: { name: tc.name, arguments: tc.arguments },
           })),
         },
-        ...toolResults.map((r) => ({
+        ...[...appResults, ...toolResults].map((r) => ({
           role: "tool",
           tool_call_id: r.id,
           content: r.text,
         })),
       ] as unknown as OpenRouterMessage[];
+    }
+    // UI payload from an app tool: render through the existing surfaces.
+    let quizForFinal: ReturnType<typeof mcqQuizPayload> | null = null;
+    if (pendingUi) {
+      if (pendingUi.kind === "mcq") {
+        let round = 1;
+        try {
+          round =
+            (await (prisma.message as any).count({
+              where: { conversationId, NOT: { quiz: null } },
+            })) + 1;
+        } catch {
+          round = 1;
+        }
+        quizForFinal = mcqQuizPayload(pendingUi, round);
+        sendEvent("quiz", { messageId: assistantMessageId, quiz: quizForFinal });
+      } else {
+        const lead = assistantContent.trim() ? "\n\n" : "";
+        const fence = `${lead}${artifactFenceOf(pendingUi)}`;
+        assistantContent += fence;
+        sendEvent("token", { delta: fence });
+      }
     }
     const sources = [...sourceMap.values()];
     // Limit-stop honesty: the provider ran out of output budget mid-answer.
@@ -701,6 +761,7 @@ export const streamOpenRouterCompletion = async (
         reasoning: allowReasoning ? assistantReasoning || null : null,
         status: "COMPLETE",
         model: selectedModel,
+        ...(quizForFinal ? { quiz: quizForFinal } : {}),
         promptTokens: usage?.prompt_tokens,
         completionTokens: usage?.completion_tokens,
         tokenCount: usage?.total_tokens,
