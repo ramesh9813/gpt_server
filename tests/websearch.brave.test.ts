@@ -148,15 +148,14 @@ describe("ensureSingleSourcesSection", () => {
     { title: "Nepal News", url: "https://english.nepalnews.com" },
   ];
 
-  it("swaps a model-written titles-only section for the canonical URL list", () => {
+  it("removes a model-written section — the Sources panel owns the list", () => {
     const body =
       "Here is the news.\n\nSources\nThe Kathmandu Post\nNepal News\nmyRepublica";
     const out = ensureSingleSourcesSection(body, sources);
     expect(out).toContain("Here is the news.");
-    expect(out).toContain("https://kathmandupost.com");
-    expect(out).toContain("https://english.nepalnews.com");
-    expect(out.match(/^Sources:$/gim)).toHaveLength(1);
+    expect(out).not.toContain("Sources");
     expect(out).not.toContain("myRepublica");
+    expect(out).not.toContain("https://kathmandupost.com");
   });
 
   it("handles **Sources:** and ## References headings", () => {
@@ -164,8 +163,7 @@ describe("ensureSingleSourcesSection", () => {
       "Answer.\n\n**Sources:**\n- Item one\n- Item two",
       sources
     );
-    expect(out.match(/sources:/gi)).toHaveLength(1);
-    expect(out).toContain("https://kathmandupost.com");
+    expect(out.trim()).toBe("Answer.");
   });
 
   it("appends the footer when the model wrote no section", () => {
@@ -181,11 +179,12 @@ describe("ensureSingleSourcesSection", () => {
     expect(out).toContain("My sources are many.");
   });
 
-  it("appendIfMissing=false only swaps, never appends", () => {
+  it("appendIfMissing=false only strips, never appends", () => {
     expect(ensureSingleSourcesSection("Just an answer.", sources, false)).toBe("Just an answer.");
-    const swapped = ensureSingleSourcesSection("Answer.\n\nSources:\n- Old item", sources, false);
-    expect(swapped).toContain("https://kathmandupost.com");
-    expect(swapped).not.toContain("Old item");
+    const stripped = ensureSingleSourcesSection("Answer.\n\nSources:\n- Old item", sources, false);
+    expect(stripped.trim()).toBe("Answer.");
+    expect(stripped).not.toContain("Old item");
+    expect(stripped).not.toContain("https://kathmandupost.com");
   });
 });
 

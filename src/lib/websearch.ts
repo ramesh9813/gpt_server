@@ -570,7 +570,8 @@ export const buildSearchContextBlock = (query: string, results: WebResult[]): st
   );
   return (
     `Live web search results for "${query}":\n\n${lines.join("\n\n")}\n\n` +
-    `Answer using these results. Cite claims with markdown links and end with a "Sources" list containing each URL above.`
+    `Answer using these results and cite claims with markdown links. ` +
+    `Do NOT write a Sources or References section at the end — the app renders the source list below the answer automatically.`
   );
 };
 
@@ -646,7 +647,7 @@ export const ensureSingleSourcesSection = (
     (lines.some(strongListLike) ||
       (lines.length >= 2 && lines.every(titleLike)));
   if (!looksLikeList) return fallback;
-  const head = text.slice(0, last.index).replace(/\s+$/, "");
-  const canonical = sources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join("\n");
-  return `${head}\n\nSources:\n${canonical}`;
+  // The Sources panel below the answer owns the canonical list — a
+  // model-written trailing section is removed so sources never render twice.
+  return text.slice(0, last.index).replace(/\s+$/, "");
 };

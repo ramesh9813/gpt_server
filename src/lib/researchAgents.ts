@@ -206,7 +206,8 @@ export const buildWriterBrief = (
       : "";
   return (
     `Verified research findings collected by parallel research agents for the question:\n"${question}"\n\n` +
-    `FINDINGS (ground every factual claim in these; cite each use as [n] matching the numbered sources below):\n` +
+    `FINDINGS (ground every factual claim in these; cite each use as [n] matching the numbered sources below; ` +
+    `do NOT write a Sources or References section — the app renders the source list automatically):\n` +
     (lines.length > 0 ? lines.join("\n") : "(no verified findings — answer from general knowledge and say so)") +
     `\n\nSOURCES:\n${sourceLines.length > 0 ? sourceLines.join("\n") : "(none)"}` +
     dropped

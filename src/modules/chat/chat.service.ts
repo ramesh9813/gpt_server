@@ -109,8 +109,8 @@ export const redactForLog = (messages: OpenRouterMessage[]) =>
 export const RESEARCH_SYSTEM_PROMPT =
   "You are a deep research analyst. Investigate the user's topic thoroughly using every source available to you. " +
   "Produce a comprehensive, well-structured report with clear headings, key findings up front, detailed analysis, " +
-  "and a Sources section listing the URLs you relied on. Be factual, cite claims to sources, and note uncertainty " +
-  "where sources disagree.";
+  "citing the URLs you rely on inline. Do NOT write a Sources or References section — the app renders the source " +
+  "list below the answer automatically. Be factual and note uncertainty where sources disagree.";
 
 // Web search (OpenRouter server tool): the model searches live website
 // content and cites sources with markdown links. Opt-in per turn via
